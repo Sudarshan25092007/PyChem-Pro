@@ -35,7 +35,7 @@ def main():
     app.setFont(font)
 
     # License check
-    from src.security.license import LicenseManager
+    from src.core.security.license import LicenseManager
     license_mgr = LicenseManager()
     is_valid, message, features = license_mgr.validate_license()
 
@@ -46,7 +46,7 @@ def main():
         is_valid, message, features = license_mgr.validate_license()
 
     # Launch main window
-    from src.gui.main_window import MainWindow
+    from src.app.main_window import MainWindow
     window = MainWindow()
     window.show()
 
