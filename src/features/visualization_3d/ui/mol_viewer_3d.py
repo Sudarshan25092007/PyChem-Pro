@@ -77,6 +77,7 @@ class MolViewer3D(QWidget):
         self.show_hydrogens = True
         self.show_labels = False
         self.show_sidechains = True
+        self.show_sasa_surface = False
         self.render_mode = 'ball_and_stick'  # 'spacefill', 'wireframe', 'cartoon', 'ribbon', 'backbone'
         self.bg_color = QColor(COLORS['viewer_bg'])
 
@@ -177,6 +178,10 @@ class MolViewer3D(QWidget):
             for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
                 if atom_idx in self.selected_atoms:
                     self._draw_selection_ring(painter, sx, sy, radius)
+
+        # Draw SASA point-cloud surface 
+        if getattr(self, 'show_sasa_surface', False):
+            self._draw_sasa_surface(painter, width, height)
 
         # Draw labels if enabled
         if self.show_labels:
@@ -341,6 +346,50 @@ class MolViewer3D(QWidget):
         painter.setBrush(QBrush(QColor(255, 200, 50, 30)))
         painter.drawEllipse(QRectF(sx - ring_r, sy - ring_r, ring_r * 2, ring_r * 2))
 
+    def _draw_sasa_surface(self, painter, width, height):
+        """Projects and renders the 3D analytical point-cloud surface for solvent accessibility."""
+        if not self.molecule:
+            return
+            
+        cx = width / 2 + self.pan_x
+        cy = height / 2 + self.pan_y
+
+        cos_x = math.cos(math.radians(self.rot_x))
+        sin_x = math.sin(math.radians(self.rot_x))
+        cos_y = math.cos(math.radians(self.rot_y))
+        sin_y = math.sin(math.radians(self.rot_y))
+        
+        # Optimize dot sizes based on scale
+        dot_r = max(1, min(3, self.zoom * 0.05))
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        for atom in self.molecule.atoms:
+            if not getattr(atom, 'sasa_points', None):
+                continue
+                
+            # Restrict SASA render to active selection if toggle is enabled
+            if getattr(self, 'show_sasa_selected_only', False) and self.selected_atoms:
+                if atom.index not in self.selected_atoms:
+                    continue
+                
+            color = _hex_to_rgb(atom.element.color)
+            # Semi-transparent dots colored like the parent atom
+            brush = QBrush(QColor(color[0], color[1], color[2], 120))
+            painter.setBrush(brush)
+            
+            for (x, y, z) in atom.sasa_points:
+                # Same projection math
+                x1 = x * cos_y + z * sin_y
+                z1 = -x * sin_y + z * cos_y
+                y1 = y * cos_x - z1 * sin_x
+                z2 = y * sin_x + z1 * cos_x
+
+                sx = cx + x1 * self.zoom
+                sy = cy - y1 * self.zoom
+                
+                # Draw small rect (faster than ellipse for point clouds)
+                painter.drawRect(QRectF(sx - dot_r/2, sy - dot_r/2, dot_r, dot_r))
+
     def set_selected(self, atom_indices):
         """Set which atoms are highlighted (from console select commands)."""
         self.selected_atoms = set(atom_indices)
@@ -401,11 +450,26 @@ class MolViewer3D(QWidget):
                     oy = dy * offset * sign
                     self._draw_bond_line(painter, x1+ox, y1+oy, x2+ox, y2+oy,
                                          c1, c2, base_width * 0.45, depth_shade)
+            elif bond.is_aromatic or bond.order == 1.5:
+                dx = y2 - y1
+                dy = -(x2 - x1)
+                length = math.sqrt(dx*dx + dy*dy) + 1e-10
+                dx /= length
+                dy /= length
+                offset = base_width * 0.7
+
+                self._draw_bond_line(painter, x1, y1, x2, y2,
+                                     c1, c2, base_width * 0.7, depth_shade)
+                
+                ox = dx * offset
+                oy = dy * offset
+                self._draw_bond_line(painter, x1+ox, y1+oy, x2+ox, y2+oy,
+                                     c1, c2, base_width * 0.4, depth_shade, dashed=True)
             else:
                 self._draw_bond_line(painter, x1, y1, x2, y2,
                                      c1, c2, base_width, depth_shade)
 
-    def _draw_bond_line(self, painter, x1, y1, x2, y2, c1, c2, width, shade):
+    def _draw_bond_line(self, painter, x1, y1, x2, y2, c1, c2, width, shade, dashed=False):
         """Draw a split-colored bond line with rounded caps."""
         mx = (x1 + x2) / 2
         my = (y1 + y2) / 2
@@ -416,9 +480,11 @@ class MolViewer3D(QWidget):
             max(0, min(255, int(g1*shade))),
             max(0, min(255, int(b1*shade)))
         )
-        pen = QPen(color1, max(1, width))
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
+        pen1 = QPen(color1, max(1, width))
+        pen1.setCapStyle(Qt.PenCapStyle.RoundCap)
+        if dashed:
+            pen1.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen1)
         painter.drawLine(QPointF(x1, y1), QPointF(mx, my))
 
         r2, g2, b2 = c2
@@ -427,9 +493,11 @@ class MolViewer3D(QWidget):
             max(0, min(255, int(g2*shade))),
             max(0, min(255, int(b2*shade)))
         )
-        pen = QPen(color2, max(1, width))
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
+        pen2 = QPen(color2, max(1, width))
+        pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+        if dashed:
+            pen2.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen2)
         painter.drawLine(QPointF(mx, my), QPointF(x2, y2))
 
     def _draw_label(self, painter, atom_idx, sx, sy, radius):

@@ -19,8 +19,6 @@ class InputPanel(QWidget):
     """
 
     convert_requested = Signal(str)
-    optimize_requested = Signal()
-    charges_requested = Signal()
     export_sdf_requested = Signal()
     export_mol2_requested = Signal()
     export_image_requested = Signal(int, bool)  # (dpi, white_bg)
@@ -28,6 +26,7 @@ class InputPanel(QWidget):
     stick_scale_changed = Signal(float)
     line_scale_changed = Signal(float)
     show_sidechains_changed = Signal(bool)
+    show_sasa_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,27 +105,6 @@ class InputPanel(QWidget):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
-        # ── Tools ──
-        tools_group = QGroupBox("Tools")
-        tools_layout = QVBoxLayout(tools_group)
-        tools_layout.setSpacing(6)
-
-        tools_row = QHBoxLayout()
-        self.optimize_btn = QPushButton("Optimize")
-        self.optimize_btn.setObjectName("btnSecondary")
-        self.optimize_btn.clicked.connect(self.optimize_requested.emit)
-        self.optimize_btn.setEnabled(False)
-        tools_row.addWidget(self.optimize_btn)
-
-        self.charges_btn = QPushButton("Charges")
-        self.charges_btn.setObjectName("btnSecondary")
-        self.charges_btn.clicked.connect(self.charges_requested.emit)
-        self.charges_btn.setEnabled(False)
-        tools_row.addWidget(self.charges_btn)
-        tools_layout.addLayout(tools_row)
-
-        layout.addWidget(tools_group)
-
         # ── View Options ──
         view_group = QGroupBox("View Options")
         view_layout = QVBoxLayout(view_group)
@@ -163,6 +141,16 @@ class InputPanel(QWidget):
         self.show_sidechains_check.setChecked(True)
         self.show_sidechains_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_sidechains_check)
+
+        self.show_sasa_check = QCheckBox("Show SASA Surface")
+        self.show_sasa_check.setChecked(False)
+        self.show_sasa_check.setStyleSheet(checkbox_style)
+        view_layout.addWidget(self.show_sasa_check)
+
+        self.sasa_selected_only_check = QCheckBox("SASA Selection Only")
+        self.sasa_selected_only_check.setChecked(False)
+        self.sasa_selected_only_check.setStyleSheet(checkbox_style)
+        view_layout.addWidget(self.sasa_selected_only_check)
 
         render_row = QHBoxLayout()
         render_label = QLabel("Style:")
@@ -363,8 +351,6 @@ class InputPanel(QWidget):
         self.info_text.setPlainText("\n".join(info_lines))
 
     def enable_tools(self, enabled=True):
-        self.optimize_btn.setEnabled(enabled)
-        self.charges_btn.setEnabled(enabled)
         self.sdf_btn.setEnabled(enabled)
         self.mol2_btn.setEnabled(enabled)
         self.export_img_btn.setEnabled(enabled)

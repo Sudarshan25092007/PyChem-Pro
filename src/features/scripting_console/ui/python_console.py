@@ -139,6 +139,10 @@ class PythonConsole(QWidget):
             'topological_fp': self._topological_fp,
             'maccs_keys': self._maccs_keys,
             'similarity': self._similarity,
+            # SASA & Aggregate Mapping
+            'count': self._count,
+            'sum_prop': self._sum_prop,
+            'set_sasa_density': self._set_sasa_density,
             # Help
             'help_cmds': self._show_help,
         }
@@ -191,9 +195,39 @@ class PythonConsole(QWidget):
 
     def _parse_selection_expr(self, expr, mol):
         """Parse a selection expression into a set of atom indices."""
+        import re
         expr = expr.strip()
         if not expr:
             return set()
+
+        # Handle enclosing parentheses
+        while expr.startswith('(') and expr.endswith(')'):
+            depth = 0
+            is_enclosing = True
+            for i, c in enumerate(expr):
+                if c == '(': depth += 1
+                elif c == ')': depth -= 1
+                if depth == 0 and i < len(expr) - 1:
+                    is_enclosing = False
+                    break
+            if is_enclosing:
+                expr = expr[1:-1].strip()
+            else:
+                break
+
+        # Pre-process for natural language matching
+        # 1. Remove the word 'atoms'
+        expr = re.sub(r'(?i)\batoms?\b', '', expr).strip()
+        
+        # 2. Convert implicit 'and' before 'within' safely using token traversal
+        tokens = expr.split()
+        new_tokens = []
+        for i, t in enumerate(tokens):
+            if t.lower() == 'within':
+                if i > 0 and tokens[i-1].lower() not in ('and', 'or', 'not', '('):
+                    new_tokens.append('and')
+            new_tokens.append(t)
+        expr = " ".join(new_tokens)
 
         # Handle 'or' — split on 'or' (case-insensitive)
         # We split on ' or ' to avoid matching within words like 'fluorine'
@@ -224,8 +258,10 @@ class PythonConsole(QWidget):
             all_atoms = set(a.index for a in mol.atoms)
             return all_atoms - inner_set
 
-        # Handle 'within X.X <expr>'
+        # Handle 'within X.X <expr>' or 'within N bonds <expr>'
         if lower.startswith('within ') or lower.startswith('near ') or lower.startswith('around '):
+            if ' bonds ' in lower or ' bond ' in lower:
+                return self._parse_within_bonds(expr, mol)
             return self._parse_within(expr, mol)
 
         # Handle 'bonded <expr>'
@@ -238,19 +274,63 @@ class PythonConsole(QWidget):
         return self._parse_atomic_term(lower, mol)
 
     def _split_keyword(self, expr, keyword):
-        """Split expression on keyword (case-insensitive), respecting word boundaries."""
+        """Split expression on keyword (case-insensitive), respecting word boundaries and parenthesis depth."""
         lower = expr.lower()
         parts = []
         pattern = f' {keyword} '
         start = 0
-        while True:
-            idx = lower.find(pattern, start)
-            if idx == -1:
-                parts.append(expr[start:].strip())
-                break
-            parts.append(expr[start:idx].strip())
-            start = idx + len(pattern)
+        depth = 0
+        i = 0
+        
+        while i < len(expr):
+            if expr[i] == '(':
+                depth += 1
+            elif expr[i] == ')':
+                depth -= 1
+                
+            if depth == 0 and lower.startswith(pattern, i):
+                parts.append(expr[start:i].strip())
+                start = i + len(pattern)
+                i = start - 1
+            i += 1
+            
+        parts.append(expr[start:].strip())
         return [p for p in parts if p]
+
+    def _parse_within_bonds(self, expr, mol):
+        """Parse 'within 5 bonds from ring N'"""
+        tokens = expr.split()
+        if len(tokens) < 4:
+            raise ValueError(f"Expected 'within <N> bonds [from] <expr>', got: {expr}")
+        try:
+            dist = int(tokens[1])
+        except ValueError:
+            raise ValueError(f"Invalid bond distance: {tokens[1]}")
+        
+        start_idx = 3
+        if len(tokens) > 3 and tokens[3].lower() in ('from', 'of', 'to'):
+            start_idx = 4
+            
+        inner_expr = " ".join(tokens[start_idx:])
+        if not inner_expr:
+            raise ValueError(f"Missing target expression in: {expr}")
+            
+        src = self._parse_selection_expr(inner_expr, mol)
+        
+        # BFS up to `dist`
+        result = set(src)
+        current_layer = set(src)
+        for _ in range(dist):
+            next_layer = set()
+            for idx in current_layer:
+                next_layer.update(mol.get_neighbors(idx))
+            next_layer -= result
+            if not next_layer:
+                break
+            result.update(next_layer)
+            current_layer = next_layer
+            
+        return result
 
     def _parse_within(self, expr, mol):
         """Parse 'within 3.0 N' or 'near 3.0 C'"""
@@ -263,6 +343,19 @@ class PythonConsole(QWidget):
         except ValueError:
             raise ValueError(f"Invalid distance: {tokens[1]}")
         inner_expr = tokens[2]
+        
+        if inner_expr.lower() in ('com', 'center of mass', 'center'):
+            com = mol.properties.get('center_of_mass')
+            if not com:
+                raise ValueError("Center of mass not computed.")
+            result = set()
+            for a in mol.atoms:
+                if not a.has_coords: continue
+                dx, dy, dz = a.x - com[0], a.y - com[1], (a.z or 0) - com[2]
+                if m.sqrt(dx*dx + dy*dy + dz*dz) <= dist:
+                    result.add(a.index)
+            return result
+            
         src = self._parse_selection_expr(inner_expr, mol)
 
         result = set()
@@ -293,6 +386,30 @@ class PythonConsole(QWidget):
 
     def _parse_atomic_term(self, term, mol):
         """Parse a single selection term."""
+        
+        # Inequalities: charge <= 0, mass > 12, sasa > 5.0
+        import re
+        ineq_match = re.match(r'^(charge|mass|sasa)\s*(==|<=|>=|<|>|!=)\s*([+-]?\d+(?:\.\d+)?)$', term)
+        if ineq_match:
+            prop, op, val_str = ineq_match.groups()
+            val = float(val_str)
+            result = set()
+            for a in mol.atoms:
+                if prop == 'charge': p_val = a.partial_charge or 0.0
+                elif prop == 'mass': p_val = a.mass
+                elif prop == 'sasa': p_val = getattr(a, 'sasa', 0.0)
+                
+                match = False
+                if op == '==': match = p_val == val
+                elif op == '!=': match = p_val != val
+                elif op == '>': match = p_val > val
+                elif op == '<': match = p_val < val
+                elif op == '>=': match = p_val >= val
+                elif op == '<=': match = p_val <= val
+                
+                if match: result.add(a.index)
+            return result
+            
         # Keywords
         if term in ('ring', 'rings'):
             rings = mol.find_rings()
@@ -317,8 +434,39 @@ class PythonConsole(QWidget):
         if term in ('heavy', 'hetero'):
             return set(a.index for a in mol.atoms if a.symbol != 'H')
 
+        if term in ('heteroatom', 'heteroatoms'):
+            return set(a.index for a in mol.atoms if a.symbol not in ('C', 'H'))
+
+        if term in ('halogen', 'halogens'):
+            return set(a.index for a in mol.atoms if a.symbol in ('F', 'Cl', 'Br', 'I', 'At'))
+
         if term == 'h' or term == 'hydrogen':
             return set(a.index for a in mol.atoms if a.symbol == 'H')
+            
+        if term == 'hetatm':
+            return set(a.index for a in mol.atoms if getattr(a, 'is_hetatm', False))
+
+        if term in ('helix', 'alpha', 'alpha-helix'):
+            return set(a.index for a in mol.atoms if getattr(a, 'ss_type', '') == 'H')
+
+        if term in ('sheet', 'beta', 'beta-sheet'):
+            return set(a.index for a in mol.atoms if getattr(a, 'ss_type', '') == 'E')
+
+        if term in ('coil', 'loop', 'turn'):
+            return set(a.index for a in mol.atoms if getattr(a, 'ss_type', '') in ('C', 'T', 'S'))
+
+        # Chain, resname, resid macro prefixes (e.g. 'chain A')
+        if term.startswith('chain '):
+            ch = term[6:].strip().upper()
+            return set(a.index for a in mol.atoms if getattr(a, 'chain_id', '') == ch)
+            
+        if term.startswith('resname '):
+            rn = term[8:].strip().upper()
+            return set(a.index for a in mol.atoms if getattr(a, 'res_name', '') == rn)
+            
+        if term.startswith('resid ') or term.startswith('resi '):
+            rn = term.split()[1].strip()
+            return set(a.index for a in mol.atoms if str(getattr(a, 'res_seq', '')) == rn)
 
         # Element symbol — case-insensitive matching
         # Try exact match first, then capitalize
@@ -375,6 +523,54 @@ class PythonConsole(QWidget):
         return []
 
     # ─── Measurement ───────────────────────────────────────────────
+
+    def _count(self, select_expr='all'):
+        """count('charge < 0') — get number of atoms matching selection."""
+        mol = self._namespace.get('mol')
+        if not mol: return 0
+        try:
+            res = self._parse_selection_expr(select_expr, mol)
+            c = len(res)
+            self._append_output(f"Count '{select_expr}': {c}")
+            return c
+        except Exception as e:
+            self._append_text(f"Error: {e}", COLORS['error'])
+            return 0
+
+    def _sum_prop(self, prop, select_expr='all'):
+        """sum_prop('mass', 'heavy') — sum a property over a selection."""
+        mol = self._namespace.get('mol')
+        if not mol: return 0.0
+        try:
+            res = self._parse_selection_expr(select_expr, mol)
+            total = 0.0
+            for idx in res:
+                a = mol.atoms[idx]
+                if prop == 'mass': total += a.mass
+                elif prop == 'charge': total += a.partial_charge or 0.0
+                elif prop == 'sasa': total += getattr(a, 'sasa', 0.0)
+                elif hasattr(a, prop):
+                    val = getattr(a, prop)
+                    if isinstance(val, (int, float)):
+                        total += val
+            self._append_output(f"Sum of '{prop}' for '{select_expr}': {total:.4f}")
+            return total
+        except Exception as e:
+            self._append_text(f"Error: {e}", COLORS['error'])
+            return 0.0
+
+    def _set_sasa_density(self, density=160):
+        """set_sasa_density(500) — recompute SASA with higher point density."""
+        mol = self._namespace.get('mol')
+        if not mol: return
+        try:
+            from src.features.cheminformatics.services.spatial_properties import compute_sasa
+            total_sasa = compute_sasa(mol, n_sphere_points=density)
+            if self._viewer_3d:
+                self._viewer_3d.update()
+            self._append_output(f"SASA recomputed with {density} points/atom. Total SASA: {total_sasa:.2f}")
+        except Exception as e:
+            self._append_text(f"Error: {e}", COLORS['error'])
 
     def _measure_distance(self, idx1, idx2):
         """distance(0, 1) — measure distance between two atoms."""
@@ -487,11 +683,24 @@ class PythonConsole(QWidget):
             "  sele('nonring')        Non-ring atoms\n"
             "  sele('bonded N')       Bonded to nitrogen\n"
             "  sele('within 3.0 N')   Within 3A of nitrogen\n"
+            "  sele('within 2 bonds O') Within 2 bonds of oxygen\n"
+            "  sele('C within 5 bonds N') Carbons within 5 bonds of N\n"
             "  sele('C and not ring') Non-ring carbons\n"
+            "  sele('charge < 0')     Negative partial charge\n"
+            "  sele('mass > 12')      Mass greater than 12 Da\n"
+            "  sele('sasa > 5.0')     Solvent exposed atoms\n"
+            "  sele('within 5.0 COM') Within 5A of Center of Mass\n"
             "  sele('heavy')          Non-hydrogen atoms\n"
+            "  sele('halogen')        F, Cl, Br, I\n"
+            "  sele('heteroatom')     Non-C, Non-H atoms\n"
+            "  sele('chain A')        PDB chain A\n"
+            "  sele('resname ALA')    PDB residue mapping\n"
             "  s('N or O or S')       s() = short for sele()\n"
             "  clear()                Clear selection\n"
             "  selected()             Get selected indices\n"
+            "  count('expr')          Number of atoms in selection\n"
+            "  sum_prop('sasa', 'C')  Sum property across selection\n"
+            "  set_sasa_density(500)  Recompute SASA with N points\n"
             "=== Measurement ===\n"
             "  distance(0, 1)         Distance in Angstroms\n"
             "  angle(0, 1, 2)         Angle in degrees\n"

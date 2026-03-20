@@ -46,7 +46,8 @@ class Atom:
         'x', 'y', 'z', 'partial_charge', 'atom_class',
         'ring_bonds', '_in_bracket', 'radical_electrons',
         'hybridization', 'sybyl_type', 'pdb_name', 'res_name',
-        'chain_id', 'res_seq', 'b_factor', 'is_hetatm', 'ss_type'
+        'chain_id', 'res_seq', 'b_factor', 'is_hetatm', 'ss_type',
+        'sasa', 'sasa_points'
     )
 
     def __init__(self, symbol, is_aromatic=False, formal_charge=0,
@@ -91,6 +92,9 @@ class Atom:
         self.b_factor = None       # B-factor/temperature factor
         self.is_hetatm = False     # Whether atom is from HETATM record
         self.ss_type = None        # Secondary structure type (H, E, C)
+        
+        self.sasa = 0.0            # Solvent Accessible Surface Area
+        self.sasa_points = []      # 3D points representing the accessible surface
 
     @property
     def symbol(self):

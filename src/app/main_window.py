@@ -6,9 +6,10 @@ import traceback
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QMenuBar, QMenu, QStatusBar, QFileDialog, QMessageBox,
-    QSplitter, QApplication, QTabWidget, QColorDialog
+    QSplitter, QApplication, QTabWidget, QColorDialog,
+    QComboBox, QPushButton, QFrame
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QSettings
 from PySide6.QtGui import QAction, QKeySequence
 
 from src.shared.ui.theme import get_stylesheet, COLORS
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SMILES to 3D -- Molecular Structure Converter")
         self.setMinimumSize(1100, 700)
         self.resize(1280, 800)
+        self.setAcceptDrops(True)
         
         # Enable smooth resizing
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
@@ -110,8 +112,11 @@ class MainWindow(QMainWindow):
 
         import_mol = QAction("&Import MOL/SDF/MOL2...", self)
         import_mol.setShortcut(QKeySequence("Ctrl+I"))
-        import_mol.triggered.connect(self._import_structure_file)
+        import_mol.triggered.connect(lambda: self._import_structure_file(None))
         file_menu.addAction(import_mol)
+
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        self._update_recent_files_menu()
 
         file_menu.addSeparator()
 
@@ -212,12 +217,49 @@ class MainWindow(QMainWindow):
 
         # Input panel (left)
         self.input_panel = InputPanel()
+        self.input_panel.setMinimumWidth(340)
         self.input_panel.setStyleSheet(f"background-color: {COLORS['bg_secondary']};")
         h_splitter.addWidget(self.input_panel)
 
         # Tabbed viewer area (right)
         self.viewer_tabs = QTabWidget()
         self.viewer_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        
+        # Tools Toolbar (Top Right Corner)
+        toolbar = QWidget()
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(0, 0, 8, 0)
+        tb_layout.setSpacing(10)
+
+        # Optimization method dropdown
+        self.opt_combo = QComboBox()
+        self.opt_combo.addItems(["MMFF94", "AM1"])
+        self.opt_combo.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_widget']}; color: {COLORS['text_primary']}; padding: 2px 6px; border-radius: 4px; }}")
+        
+        self.optimize_btn = QPushButton("Optimize")
+        self.optimize_btn.setObjectName("btnSecondary")
+        self.optimize_btn.clicked.connect(self._optimize_geometry)
+        self.optimize_btn.setEnabled(False)
+        
+        tb_layout.addWidget(self.opt_combo)
+        tb_layout.addWidget(self.optimize_btn)
+
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.VLine)
+        sep1.setFrameShadow(QFrame.Shadow.Sunken)
+        tb_layout.addWidget(sep1)
+
+        self.chg_combo = QComboBox()
+        self.chg_combo.addItems(["Gasteiger", "MMFF94", "AM1", "PM3"])
+        self.chg_combo.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_widget']}; color: {COLORS['text_primary']}; padding: 2px 6px; border-radius: 4px; }}")
+        self.charges_btn = QPushButton("Charges")
+        self.charges_btn.setObjectName("btnSecondary")
+        self.charges_btn.clicked.connect(self._compute_charges)
+        self.charges_btn.setEnabled(False)
+        tb_layout.addWidget(self.chg_combo)
+        tb_layout.addWidget(self.charges_btn)
+        
+        self.viewer_tabs.setCornerWidget(toolbar, Qt.Corner.TopRightCorner)
 
         self.viewer_3d = MolViewer3D()
         self.viewer_2d = MolViewer2D()
@@ -228,6 +270,7 @@ class MainWindow(QMainWindow):
         h_splitter.addWidget(self.viewer_tabs)
         h_splitter.setStretchFactor(0, 0)
         h_splitter.setStretchFactor(1, 1)
+        h_splitter.setSizes([340, 900])
 
         v_splitter.addWidget(h_splitter)
         v_splitter.setStretchFactor(0, 0)
@@ -246,8 +289,6 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         """Connect all widget signals."""
         self.input_panel.convert_requested.connect(self._convert_smiles)
-        self.input_panel.optimize_requested.connect(self._optimize_geometry)
-        self.input_panel.charges_requested.connect(self._compute_charges)
         self.input_panel.export_sdf_requested.connect(self._export_sdf)
         self.input_panel.export_mol2_requested.connect(self._export_mol2)
         self.input_panel.export_image_requested.connect(self._export_image)
@@ -264,7 +305,18 @@ class MainWindow(QMainWindow):
         self.input_panel.show_h_check.toggled.connect(self._toggle_hydrogens)
         self.input_panel.show_labels_check.toggled.connect(self._toggle_labels)
         self.input_panel.show_sidechains_check.toggled.connect(self._toggle_sidechains)
+        self.input_panel.show_sasa_check.toggled.connect(self._toggle_sasa)
+        self.input_panel.sasa_selected_only_check.toggled.connect(self._toggle_sasa_selected_only)
         self.input_panel.render_combo.currentIndexChanged.connect(self._change_render_mode)
+
+    def _toggle_sasa(self, checked):
+        self.viewer_3d.show_sasa_surface = checked
+        self.viewer_3d.update()
+
+    def _toggle_sasa_selected_only(self, checked):
+        self.viewer_3d.show_sasa_selected_only = checked
+        if getattr(self.viewer_3d, 'show_sasa_surface', False):
+            self.viewer_3d.update()
 
     # ─── Core Actions ──────────────────────────────────────────────
 
@@ -305,6 +357,14 @@ class MainWindow(QMainWindow):
 
     def _set_molecule(self, molecule):
         """Set molecule across all viewers and panels."""
+        
+        try:
+            from src.features.cheminformatics.services.spatial_properties import compute_sasa, compute_center_of_mass
+            compute_sasa(molecule)
+            compute_center_of_mass(molecule)
+        except Exception as e:
+            print(f"Skipping SASA/COM evaluation: {e}")
+            
         self.molecule = molecule
         self.viewer_3d.set_molecule(molecule)
         
@@ -325,49 +385,97 @@ class MainWindow(QMainWindow):
         self.console.set_molecule(molecule)
         self.input_panel.update_molecule_info(molecule)
         self.input_panel.enable_tools(True)
+        self.optimize_btn.setEnabled(True)
+        self.charges_btn.setEnabled(True)
 
     def _optimize_geometry(self):
         if not self.molecule:
             return
-        self.status_bar.showMessage("Optimizing geometry...")
+        method = self.opt_combo.currentText()
+        if "AM1" in method:
+            self.status_bar.showMessage("Optimizing geometry (AM1)...")
+        else:
+            self.status_bar.showMessage("Optimizing geometry (MMFF94)...")
         QApplication.processEvents()
         try:
-            from src.features.layout_3d.forcefield.optimizer import optimize_geometry
-            energy, converged, steps = optimize_geometry(
-                self.molecule, max_steps=500, method='lbfgs')
-            self.viewer_3d.set_molecule(self.molecule)
-            status = "converged" if converged else f"after {steps} steps"
-            self.status_bar.showMessage(
-                f"Optimized ({status}), Energy: {energy:.2f}")
+            if "AM1" in method:
+                from src.features.cheminformatics.services.am1 import am1_optimize_geometry
+                success = am1_optimize_geometry(self.molecule, max_steps=50)
+                self.viewer_3d.set_molecule(self.molecule)
+                status = "converged" if success else "max steps reached"
+                self.status_bar.showMessage(f"Optimized (AM1: {status})")
+            else:
+                from src.features.cheminformatics.services.mmff94 import mmff94_optimize_geometry
+                success = mmff94_optimize_geometry(self.molecule, max_iters=500)
+                self.viewer_3d.set_molecule(self.molecule)
+                status = "converged" if success else "max steps reached"
+                self.status_bar.showMessage(f"Optimized (MMFF94: {status})")
         except Exception as e:
             self.status_bar.showMessage(f"Optimization error: {e}")
 
     def _compute_charges(self):
         if not self.molecule:
             return
-        self.status_bar.showMessage("Computing charges...")
+        method = self.chg_combo.currentText()
+        if "PM3" in method:
+            self.status_bar.showMessage("Computing PM3 charges...")
+        elif "AM1" in method:
+            self.status_bar.showMessage("Computing AM1 charges...")
+        elif "MMFF94" in method:
+            self.status_bar.showMessage("Computing MMFF94 charges...")
+        else:
+            self.status_bar.showMessage("Computing Gasteiger charges...")
         QApplication.processEvents()
         try:
-            from src.features.cheminformatics.electrostatics.gasteiger import compute_gasteiger_charges
-            compute_gasteiger_charges(self.molecule)
-            self.input_panel.update_molecule_info(self.molecule)
-            self.viewer_3d.update()
-            self.status_bar.showMessage("Gasteiger charges computed")
+            if "PM3" in method:
+                from src.features.cheminformatics.services.pm3 import pm3_assign_charges
+                success = pm3_assign_charges(self.molecule)
+                if success:
+                    self.input_panel.update_molecule_info(self.molecule)
+                    self.viewer_3d.update()
+                    self.status_bar.showMessage("PM3 partial charges assigned successfully")
+                else:
+                    self.status_bar.showMessage("PM3 charge calculation failed")
+            elif "AM1" in method:
+                from src.features.cheminformatics.services.am1 import am1_assign_charges
+                success = am1_assign_charges(self.molecule)
+                if success:
+                    self.input_panel.update_molecule_info(self.molecule)
+                    self.viewer_3d.update()
+                    self.status_bar.showMessage("AM1 partial charges assigned successfully")
+                else:
+                    self.status_bar.showMessage("AM1 charge calculation failed")
+            elif "MMFF94" in method:
+                from src.features.cheminformatics.services.mmff94 import mmff94_assign_charges
+                success = mmff94_assign_charges(self.molecule)
+                if success:
+                    self.input_panel.update_molecule_info(self.molecule)
+                    self.viewer_3d.update()
+                    self.status_bar.showMessage("MMFF94 partial charges assigned successfully")
+                else:
+                    self.status_bar.showMessage("MMFF94 charge calculation failed")
+            else:
+                from src.features.cheminformatics.electrostatics.gasteiger import compute_gasteiger_charges
+                compute_gasteiger_charges(self.molecule)
+                self.input_panel.update_molecule_info(self.molecule)
+                self.viewer_3d.update()
+                self.status_bar.showMessage("Gasteiger charges computed")
         except Exception as e:
             self.status_bar.showMessage(f"Charge computation error: {e}")
 
     # ─── Import ────────────────────────────────────────────────────
 
-    def _import_structure_file(self):
+    def _import_structure_file(self, filepath=None):
         """Import a molecule from MOL, SDF, MOL2, or PDB file."""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Import Structure File", "",
-            "All Structure Files (*.mol *.sdf *.mol2 *.pdb *.ent);;"
-            "PDB Files (*.pdb *.ent);;"
-            "MOL Files (*.mol);;"
-            "SDF Files (*.sdf);;"
-            "MOL2 Files (*.mol2);;"
-            "All Files (*)")
+        if not filepath:
+            filepath, _ = QFileDialog.getOpenFileName(
+                self, "Import Structure File", "",
+                "All Structure Files (*.mol *.sdf *.mol2 *.pdb *.ent);;"
+                "PDB Files (*.pdb *.ent);;"
+                "MOL Files (*.mol);;"
+                "SDF Files (*.sdf);;"
+                "MOL2 Files (*.mol2);;"
+                "All Files (*)")
         if not filepath:
             return
 
@@ -434,6 +542,7 @@ class MainWindow(QMainWindow):
             if is_protein:
                 info += " [PROTEIN]"
             self.status_bar.showMessage(info)
+            self._add_recent_file(filepath)
 
         except Exception as e:
             self.status_bar.showMessage(f"Import error: {e}")
@@ -480,15 +589,91 @@ class MainWindow(QMainWindow):
         if filepath:
             try:
                 with open(filepath, 'r') as f:
-                    lines = f.readlines()
-                for line in lines:
-                    smiles = line.strip().split()[0] if line.strip() else ""
-                    if smiles:
-                        self.input_panel.smiles_input.setPlainText(smiles)
-                        self._convert_smiles(smiles)
-                        break
+                    content = f.read().strip()
+                # Parse first word as SMILES
+                smiles = content.split()[0]
+                self.input_panel.smiles_input.setText(smiles)
+                self._convert_smiles(smiles)
+                self._add_recent_file(filepath)
             except Exception as e:
-                QMessageBox.critical(self, "File Error", str(e))
+                QMessageBox.critical(self, "Error", f"Failed to read file:\n{e}")
+
+    # ─── OS Events and UX ──────────────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and urls[0].isLocalFile():
+                ext = urls[0].toLocalFile().lower()
+                if ext.endswith(('.smi', '.mol', '.sdf', '.mol2', '.pdb', '.ent')):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls and urls[0].isLocalFile():
+            filepath = urls[0].toLocalFile()
+            ext = filepath.lower()
+            if ext.endswith('.smi'):
+                try:
+                    with open(filepath, 'r') as f:
+                        smiles = f.read().strip().split()[0]
+                    self.input_panel.smiles_input.setText(smiles)
+                    self._convert_smiles(smiles)
+                    self._add_recent_file(filepath)
+                except Exception as e:
+                    self.status_bar.showMessage(f"Error reading SMILES: {e}")
+            else:
+                self._import_structure_file(filepath)
+            event.acceptProposedAction()
+
+    def _update_recent_files_menu(self):
+        """Update recent files context menu."""
+        self.recent_menu.clear()
+        settings = QSettings("SMILESApp", "Viewer")
+        files = settings.value("recent_files", [])
+        if not isinstance(files, list):
+            files = []
+        for f in files:
+            action = QAction(f, self)
+            action.triggered.connect(lambda checked=False, path=f: self._open_recent_file(path))
+            self.recent_menu.addAction(action)
+        if not files:
+            action = QAction("No Recent Files", self)
+            action.setEnabled(False)
+            self.recent_menu.addAction(action)
+
+    def _open_recent_file(self, filepath):
+        import os
+        if not os.path.exists(filepath):
+            QMessageBox.warning(self, "Error", f"File not found:\n{filepath}")
+            return
+        ext = filepath.lower()
+        if ext.endswith('.smi'):
+            try:
+                with open(filepath, 'r') as f:
+                    smiles = f.read().strip().split()[0]
+                self.input_panel.smiles_input.setText(smiles)
+                self._convert_smiles(smiles)
+            except Exception as e:
+                self.status_bar.showMessage(f"Error reading SMILES: {e}")
+        else:
+            self._import_structure_file(filepath)
+
+    def _add_recent_file(self, filepath):
+        settings = QSettings("SMILESApp", "Viewer")
+        files = settings.value("recent_files", [])
+        if not isinstance(files, list):
+            files = []
+        if filepath in files:
+            files.remove(filepath)
+        files.insert(0, filepath)
+        if len(files) > 5:
+            files = files[:5]
+        settings.setValue("recent_files", files)
+        self._update_recent_files_menu()
+
 
     def _export_image(self, dpi, white_bg):
         if not self.molecule:
