@@ -33,6 +33,23 @@ COLORS = {
     'scrollbar_bg':    '#1a1a2e',      # Scrollbar track
     'scrollbar_handle':'#334775',      # Scrollbar handle
     'viewer_bg':       '#ffffff',      # 3D viewer background (white)
+    
+    # Atom colors for molecular visualization
+    'atom_default':    '#808080',      # Gray for unknown atoms
+    'atom_h':          '#ffffff',      # White for hydrogen
+    'atom_c':          '#909090',      # Gray for carbon
+    'atom_n':          '#3050f8',      # Blue for nitrogen
+    'atom_o':          '#ff0d0d',      # Red for oxygen
+    'atom_f':          '#90e050',      # Light green for fluorine
+    'atom_p':          '#ff8000',      # Orange for phosphorus
+    'atom_s':          '#ffff30',      # Yellow for sulfur
+    'atom_cl':         '#1ff01f',      # Green for chlorine
+    'atom_br':         '#a62929',      # Dark red for bromine
+    'atom_i':          '#940094',      # Purple for iodine
+    'atom_selected':    '#ff00ff',      # Magenta for selected atoms
+    'atom_highlight':   '#ffff00',      # Yellow for highlighted atoms
+    'atom_positive':    '#0000ff',      # Blue for positive charges
+    'atom_negative':    '#ff0000',      # Red for negative charges
 }
 
 

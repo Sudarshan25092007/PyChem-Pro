@@ -489,7 +489,17 @@ class PythonConsole(QWidget):
         indices = [a.index for a in mol.atoms if a.symbol.lower() == term]
         if indices:
             return set(indices)
-
+        
+        # Property-based selection shortcuts
+        property_terms = {
+            'donor': 'donor',
+            'acc': 'acceptor', 
+            'lipo': 'lipophilic'
+        }
+        
+        if term.lower() in property_terms:
+            return self._select_by_property(term)
+        
         raise ValueError(f"Unknown selection term: '{term}'")
 
     # ─── Simple Functions ──────────────────────────────────────────
@@ -515,6 +525,50 @@ class PythonConsole(QWidget):
         """Clear all atom selections."""
         self._apply_selection([])
         self._append_output("Selection cleared.")
+        return []
+
+    def _select_by_property(self, property_type):
+        """Select atoms by chemical property.
+        
+        Usage:
+            sele('donor')   - H-bond donors
+            sele('acc')     - H-bond acceptors  
+            sele('lipo')    - Lipophilic atoms
+        """
+        mol = self._namespace.get('mol')
+        if not mol:
+            self._append_text("No molecule loaded.", COLORS['warning'])
+            return []
+        
+        try:
+            from src.features.cheminformatics.services.atom_properties import select_atoms_by_property
+            
+            # Map short commands to full property names
+            property_map = {
+                'donor': 'donor',
+                'acc': 'acceptor', 
+                'lipo': 'lipophilic'
+            }
+            
+            prop_name = property_map.get(property_type.lower(), property_type)
+            selected_indices = select_atoms_by_property(mol, prop_name)
+            
+            self._apply_selection(selected_indices)
+            
+            # Get property name for display
+            display_names = {
+                'donor': 'H-bond donors',
+                'acceptor': 'H-bond acceptors',
+                'lipophilic': 'lipophilic atoms'
+            }
+            
+            display_name = display_names.get(prop_name, prop_name)
+            self._append_output(f"Selected {len(selected_indices)} {display_name}")
+            return sorted(selected_indices)
+            
+        except Exception as e:
+            self._append_text(f"Property selection error: {e}", COLORS['error'])
+            return []
 
     def _get_selected(self):
         """Return list of currently selected atom indices."""

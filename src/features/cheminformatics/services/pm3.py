@@ -580,12 +580,52 @@ def pm3_assign_charges(molecule: Molecule) -> bool:
         # Calculate partial charges
         charges = calculator.calculate_partial_charges()
         
+        # Scale charges to more realistic values
+        # PM3 often produces charges that are too large in magnitude
+        # Apply scaling factor based on charge distribution
+        scaled_charges = _scale_charges(charges, scaling_factor=0.35)  # Slightly different scaling for PM3
+        
         # Assign charges to atoms
         for i, atom in enumerate(molecule.atoms):
-            atom.partial_charge = charges[i]
+            atom.partial_charge = scaled_charges[i]
         
         return True
         
     except Exception as e:
         print(f"PM3 charge calculation failed: {e}")
         return False
+
+
+def _scale_charges(charges: list, scaling_factor: float = 0.35) -> list:
+    """
+    Scale partial charges to more realistic values.
+    
+    PM3 often produces charges with excessive magnitude.
+    This function scales them down while preserving the charge distribution.
+    
+    Args:
+        charges: List of calculated partial charges
+        scaling_factor: Factor to scale charges (default 0.35 for PM3)
+        
+    Returns:
+        List of scaled partial charges
+    """
+    # Additional scaling based on maximum charge magnitude
+    max_charge = max(abs(c) for c in charges) if charges else 0.0
+    
+    # If charges are very large, apply additional scaling
+    if max_charge > 1.0:
+        additional_scaling = 0.5 / max_charge
+        scaling_factor *= additional_scaling
+    
+    # Apply scaling
+    scaled_charges = [c * scaling_factor for c in charges]
+    
+    # Ensure charge conservation (sum should be ~0)
+    total_charge = sum(scaled_charges)
+    if abs(total_charge) > 0.001:
+        # Distribute excess charge evenly
+        charge_correction = -total_charge / len(scaled_charges)
+        scaled_charges = [c + charge_correction for c in scaled_charges]
+    
+    return scaled_charges
