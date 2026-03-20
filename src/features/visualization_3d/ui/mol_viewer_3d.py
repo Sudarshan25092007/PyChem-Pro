@@ -82,7 +82,7 @@ class MolViewer3D(QWidget):
         self.bg_color = QColor(COLORS['viewer_bg'])
 
         # User-adjustable radius scales (1.0 = default)
-        self.sphere_scale = 1.0   # Multiplier for atom sphere radius
+        self.sphere_scale = 0.6   # Multiplier for atom sphere radius (60% default)
         self.stick_scale = 1.0    # Multiplier for bond stick width
         self.line_scale = 1.0     # Multiplier for wireframe line width
         self.label_font_size = 9  # Fixed label font size in points
@@ -188,6 +188,9 @@ class MolViewer3D(QWidget):
             for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
                 self._draw_label(painter, atom_idx, sx, sy, radius)
 
+        # Draw dummy spheres (COM, centroid, custom)
+        self._draw_dummy_spheres(painter, width, height)
+
         # Draw measurements
         if self._measure_atoms or self._measurements:
             self._draw_measurements(painter, projected)
@@ -248,8 +251,7 @@ class MolViewer3D(QWidget):
 
             # Color from element
             color = _hex_to_rgb(atom.element.color)
-            if atom.symbol == 'H':
-                color = (185, 195, 210)
+            # Note: Removed hardcoded H color override to allow user customization
 
             projected.append((atom.index, sx, sy, sz, display_r, color))
 
@@ -474,31 +476,54 @@ class MolViewer3D(QWidget):
         mx = (x1 + x2) / 2
         my = (y1 + y2) / 2
 
-        r1, g1, b1 = c1
-        color1 = QColor(
-            max(0, min(255, int(r1*shade))),
-            max(0, min(255, int(g1*shade))),
-            max(0, min(255, int(b1*shade)))
-        )
-        pen1 = QPen(color1, max(1, width))
-        pen1.setCapStyle(Qt.PenCapStyle.RoundCap)
-        if dashed:
-            pen1.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen1)
-        painter.drawLine(QPointF(x1, y1), QPointF(mx, my))
+        # Check if we should use theme stick colors instead of atom colors
+        from src.shared.ui.theme import COLORS
+        use_theme_stick_colors = 'stick_default' in COLORS
+        
+        if use_theme_stick_colors:
+            # Use theme stick colors
+            stick_color_hex = COLORS.get('stick_default', '#808080')
+            stick_rgb = _hex_to_rgb(stick_color_hex)
+            
+            r, g, b = stick_rgb
+            color = QColor(
+                max(0, min(255, int(r*shade))),
+                max(0, min(255, int(g*shade))),
+                max(0, min(255, int(b*shade)))
+            )
+            pen = QPen(color, max(1, width))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            if dashed:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        else:
+            # Use atom colors (original behavior)
+            r1, g1, b1 = c1
+            color1 = QColor(
+                max(0, min(255, int(r1*shade))),
+                max(0, min(255, int(g1*shade))),
+                max(0, min(255, int(b1*shade)))
+            )
+            pen1 = QPen(color1, max(1, width))
+            pen1.setCapStyle(Qt.PenCapStyle.RoundCap)
+            if dashed:
+                pen1.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen1)
+            painter.drawLine(QPointF(x1, y1), QPointF(mx, my))
 
-        r2, g2, b2 = c2
-        color2 = QColor(
-            max(0, min(255, int(r2*shade))),
-            max(0, min(255, int(g2*shade))),
-            max(0, min(255, int(b2*shade)))
-        )
-        pen2 = QPen(color2, max(1, width))
-        pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
-        if dashed:
-            pen2.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen2)
-        painter.drawLine(QPointF(mx, my), QPointF(x2, y2))
+            r2, g2, b2 = c2
+            color2 = QColor(
+                max(0, min(255, int(r2*shade))),
+                max(0, min(255, int(g2*shade))),
+                max(0, min(255, int(b2*shade)))
+            )
+            pen2 = QPen(color2, max(1, width))
+            pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+            if dashed:
+                pen2.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen2)
+            painter.drawLine(QPointF(mx, my), QPointF(x2, y2))
 
     def _draw_label(self, painter, atom_idx, sx, sy, radius):
         atom = self.molecule.atoms[atom_idx]
@@ -1347,3 +1372,60 @@ class MolViewer3D(QWidget):
         painter.setPen(QColor(255, 255, 100))  # Yellow text
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 
                         indicator_text)
+
+    def _draw_dummy_spheres(self, painter, width, height):
+        """Draw dummy spheres (COM, centroid, custom) if they exist."""
+        if not self.molecule:
+            return
+            
+        # Check if molecule has dummy spheres
+        if not hasattr(self.molecule, 'dummy_spheres'):
+            return
+            
+        cx = width / 2 + self.pan_x
+        cy = height / 2 + self.pan_y
+
+        cos_x = math.cos(math.radians(self.rot_x))
+        sin_x = math.sin(math.radians(self.rot_x))
+        cos_y = math.cos(math.radians(self.rot_y))
+        sin_y = math.sin(math.radians(self.rot_y))
+        
+        for sphere in self.molecule.dummy_spheres:
+            if not sphere.visible:
+                continue
+                
+            # Get sphere position and color
+            x, y, z = sphere.position
+            radius = sphere.radius
+            
+            # Use theme color for spheres
+            from src.shared.ui.theme import COLORS
+            color_hex = COLORS.get('sphere_default', sphere.color)
+            
+            # Project 3D to 2D
+            x1 = x * cos_y + z * sin_y
+            z1 = -x * sin_y + z * cos_y
+            y1 = y * cos_x - z1 * sin_x
+            z2 = y * sin_x + z1 * cos_x
+
+            sx = cx + x1 * self.zoom
+            sy = cy - y1 * self.zoom
+            sz = z2
+            
+            # Display radius with depth scaling
+            display_r = radius * self.zoom * self.sphere_scale
+            depth_factor = 1.0 + sz * 0.02
+            display_r *= max(0.5, min(1.5, depth_factor))
+            
+            # Convert color to RGB
+            color_rgb = _hex_to_rgb(color_hex)
+            
+            # Draw sphere
+            self._draw_atom_sphere(painter, -1, sx, sy, sz, display_r, color_rgb)
+            
+            # Draw label if sphere has one
+            if hasattr(sphere, 'label') and sphere.label:
+                painter.setPen(QColor(255, 255, 255))
+                painter.setFont(QFont('Arial', 8))
+                label_rect = QRectF(sx + display_r + 5, sy - 10, 100, 20)
+                painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft, sphere.label)
