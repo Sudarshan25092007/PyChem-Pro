@@ -11,21 +11,26 @@ ChemDraw-like aesthetics:
 - Triple bond with even triple lines
 - Wedge and hash bonds for stereochemistry
 - Heteroatom labels in element-specific colors
+- **Direction-aware H labels** (NH vs HN, OH vs HO) — prevents overlap
 - Implicit H notation with subscript counts
 - Background clearing behind labels
 - Proper skeletal formula (C vertices hidden)
 - Hydrogen toggle support
 - Selection highlighting
+- Distance / angle measurement overlay
+- Atom tooltip on hover
 """
 
 import math
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import (
+from src.shared.qt_compat import QWidget, Qt, QPointF, QRectF, Signal
+from src.shared.qt_compat import (
     QPainter, QColor, QPen, QBrush, QFont, QFontMetrics,
     QImage, QPainterPath, QPolygonF
 )
 from src.shared.ui.theme import COLORS
+
+# Set to True during development to enable [DEBUG] prints
+_DEBUG = False
 
 
 # ── ChemDraw-style element colors ────────────────────────────────
@@ -68,7 +73,30 @@ class MolViewer2D(QWidget):
     """
     Publication-quality 2D skeletal formula viewer.
     Mimics the aesthetic of ChemDraw / RDKit depiction.
+
+    Selection
+    ---------
+    **Shift + left-drag** draws a rubber-band rectangle (PyMOL-style).
+    Atoms whose 2D screen positions fall inside the rectangle on
+    mouse-release are added to ``selected_atoms``.  A plain left-click
+    on empty space clears the selection.
+
+    Deletion
+    --------
+    Pressing the **Delete** key while atoms are selected emits
+    ``delete_requested`` so the main window can remove those atoms
+    from the domain model and refresh both viewers.
+
+    Keyboard Shortcuts
+    ------------------
+    - **F**      — Fit molecule to screen
+    - **R**      — Reset view (fit + center)
+    - **Delete** — Delete selected atoms
     """
+
+    # --- Signals ---
+    selection_changed = Signal(object)   # emits set of selected atom indices
+    delete_requested = Signal(object)    # emits set of atom indices to delete
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +104,8 @@ class MolViewer2D(QWidget):
         self.coords_2d = {}
         self.selected_atoms = set()
         self.setMinimumSize(400, 400)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # receive key events
+        self.setMouseTracking(True)  # For hover tooltips
 
         # Display settings
         self.bg_color = QColor(COLORS['viewer_bg'])
@@ -97,16 +127,55 @@ class MolViewer2D(QWidget):
         self._last_mouse_pos = None
         self._mouse_button = None
         self._is_dark_bg = True
+        self._hovered_atom = -1            # For tooltip on hover
+
+        # Rubber-band selection rectangle (screen coords)
+        self._sel_rect_origin = None   # QPointF or None
+        self._sel_rect_end = None      # QPointF or None
+        self._is_selecting = False     # True while Shift+left-drag is active
+
+        # Export state (set during export_image calls)
+        self._original_scale = None    # Pre-export scale for font sizing
 
     def set_molecule(self, molecule, coords_2d=None):
+        """
+        Set the molecule and its 2D coordinates.
+        If coordinates are not provided, they are generated using the
+        appropriate engine based on the molecule's source.
+        """
         self.molecule = molecule
         self.selected_atoms = set()
 
+        source = molecule.properties.get('source', 'unknown') if molecule else 'unknown'
+
         if coords_2d:
+            if _DEBUG:
+                print(f"[DEBUG] Using explicitly provided 2D coordinates: {len(coords_2d)}")
             self.coords_2d = coords_2d
         elif molecule and molecule.atoms:
-            from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
-            self.coords_2d = CoordinateGenerator2D(molecule).generate()
+            # Check if coordinates already exist on atoms (e.g. from parser)
+            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None for a in molecule.atoms if a.symbol != 'H')
+
+            if source == 'smiles':
+                from src.features.layout_2d.generators.coordgen2d_smiles import CoordinateGenerator2DSMILES
+                if _DEBUG:
+                    print("[DEBUG] Using Specialized SMILES Layout Engine...")
+                generator = CoordinateGenerator2DSMILES(molecule, force_regenerate=(not has_coords))
+                self.coords_2d = generator.generate()
+            else:
+                from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
+                if _DEBUG:
+                    print("[DEBUG] Using General Structure Layout Engine...")
+                generator = CoordinateGenerator2D(molecule, force_regenerate=(not has_coords))
+                self.coords_2d = generator.generate()
+
+            # Ensure ring perception is up-to-date for correct double bond placement
+            molecule.find_rings()
+
+            # Professionally Kekulize aromatic bonds using robust graph matching
+            from src.features.smiles_parser.rules.aromaticity import kekulize
+            kekulize(molecule)
+
         else:
             self.coords_2d = {}
 
@@ -161,6 +230,18 @@ class MolViewer2D(QWidget):
         if self.selected_atoms:
             self._draw_selection(painter, visible)
 
+        # Layer 4: Distance / angle measurement overlay
+        if len(self.selected_atoms) in (2, 3):
+            self._draw_measurement_overlay(painter, visible)
+
+        # Layer 5: Rubber-band selection rectangle (while Shift+dragging)
+        if self._is_selecting and self._sel_rect_origin and self._sel_rect_end:
+            self._draw_rubber_band(painter)
+
+        # Layer 6: Hover tooltip
+        if self._hovered_atom >= 0 and not is_export:
+            self._draw_hover_tooltip(painter)
+
         if not is_export:
             self._draw_overlay(painter)
 
@@ -173,15 +254,8 @@ class MolViewer2D(QWidget):
             if atom.index not in self.coords_2d:
                 continue
             if atom.symbol == 'H' and not self.show_hydrogens:
-                # Hide implicit H — but show explicit H on heteroatoms
-                neighbors = list(self.molecule.get_neighbors(atom.index))
-                if len(neighbors) == 1:
-                    parent = self.molecule.atoms[neighbors[0]]
-                    if parent.symbol == 'C':
-                        continue  # Hide H bonded to carbon
-                    # Check if this H is explicit (in bracket) or was added
-                    # For non-carbon parents, show H only if show_hydrogens is on
-                    continue
+                # Always hide hydrogen atoms - they are shown as part of parent atom label (CH3, OH, NH, etc.)
+                continue
             visible.add(atom.index)
         return visible
 
@@ -257,7 +331,7 @@ class MolViewer2D(QWidget):
             elif order == 3.0 or bond.is_triple:
                 self._draw_triple(painter, x1, y1, x2, y2, bond_color, bw)
             elif order == 1.5:
-                self._draw_aromatic(painter, x1, y1, x2, y2, bond_color, bw)
+                self._draw_aromatic(painter, x1, y1, x2, y2, bond_color, bw, bond)
             else:
                 self._draw_single(painter, x1, y1, x2, y2, bond_color, bw, bond)
 
@@ -273,11 +347,80 @@ class MolViewer2D(QWidget):
         return (w / 2) + self._label_padding
 
     def _draw_single(self, painter, x1, y1, x2, y2, color, width, bond=None):
-        """Draw a single bond — optionally as wedge/dash."""
-        pen = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        """Single bond - BKChem-style with wedge/hash stereochemistry support."""
+        # Check for stereochemistry
+        if bond and hasattr(bond, 'stereo'):
+            if bond.stereo == 'up':
+                self._draw_wedge(painter, x1, y1, x2, y2, color, width)
+                return
+            elif bond.stereo == 'down':
+                self._draw_hash(painter, x1, y1, x2, y2, color, width)
+                return
+
+        # Regular single bond
+        pen = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+    def _draw_wedge(self, painter, x1, y1, x2, y2, color, width):
+        """Draw wedge bond (solid triangle) for stereochemistry."""
+        dx, dy = x2 - x1, y2 - y1
+        dist = math.hypot(dx, dy)
+        if dist < 2:
+            return
+
+        # Create wedge path
+        nx, ny = -dy / dist, dx / dist
+        wedge_width = self._scale * self._wedge_width_ratio
+
+        # Triangle points for wedge
+        p1 = QPointF(x1, y1)
+        p2 = QPointF(x1 - nx * wedge_width, y1 - ny * wedge_width)
+        p3 = QPointF(x1 + nx * wedge_width, y1 + ny * wedge_width)
+
+        path = QPainterPath()
+        path.moveTo(p1)
+        path.lineTo(p2)
+        path.lineTo(p3)
+        path.closeSubpath()
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawPath(path)
+
+        # Draw wedge outline
+        pen = QPen(color, width * 0.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        painter.drawPath(path)
+
+    def _draw_hash(self, painter, x1, y1, x2, y2, color, width):
+        """Draw hash bond (parallel lines) for stereochemistry."""
+        dx, dy = x2 - x1, y2 - y1
+        dist = math.hypot(dx, dy)
+        if dist < 2:
+            return
+
+        nx, ny = -dy / dist, dx / dist
+        hash_width = self._scale * self._wedge_width_ratio
+
+        pen = QPen(color, width * 0.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        # Draw hash lines perpendicular to bond
+        for i in range(1, 6):
+            t = i / 6.0
+            hx = x1 + dx * t
+            hy = y1 + dy * t
+
+            # Hash line endpoints
+            h1x = hx - nx * hash_width
+            h1y = hy - ny * hash_width
+            h2x = hx + nx * hash_width
+            h2y = hy + ny * hash_width
+
+            painter.drawLine(QPointF(h1x, h1y), QPointF(h2x, h2y))
 
     def _draw_double(self, painter, x1, y1, x2, y2, color, width, bond=None):
         """ChemDraw-style double bond: one full line + one inner shorter line."""
@@ -295,10 +438,10 @@ class MolViewer2D(QWidget):
         onx, ony = nx * offset * side, ny * offset * side
 
         pen_main = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        pen_inner = QPen(color, width * 0.75, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
 
         # Main bond (full length)
         painter.setPen(pen_main)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
         # Inner bond (shortened ~18% each end)
@@ -308,37 +451,44 @@ class MolViewer2D(QWidget):
         ix2 = x2 - dx * shrink + onx
         iy2 = y2 - dy * shrink + ony
 
+        pen_inner = QPen(color, width * 0.85, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen_inner)
         painter.drawLine(QPointF(ix1, iy1), QPointF(ix2, iy2))
 
     def _draw_triple(self, painter, x1, y1, x2, y2, color, width):
-        """Triple bond: three parallel lines."""
+        """Triple bond: one center line + two offset lines."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
         if dist < 2:
             return
-        nx, ny = -dy / dist, dx / dist
+        ux, uy = dx / dist, dy / dist
+        nx, ny = -uy, ux
         offset = self._scale * self._triple_offset_ratio
 
-        pen = QPen(color, width * 0.75, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        pen = QPen(color, width * 0.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
 
+        # Center line
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        painter.drawLine(
-            QPointF(x1 + nx * offset, y1 + ny * offset),
-            QPointF(x2 + nx * offset, y2 + ny * offset))
-        painter.drawLine(
-            QPointF(x1 - nx * offset, y1 - ny * offset),
-            QPointF(x2 - nx * offset, y2 - ny * offset))
 
-    def _draw_aromatic(self, painter, x1, y1, x2, y2, color, width):
+        # Two offset lines
+        for sign in (1, -1):
+            ox, oy = nx * offset * sign, ny * offset * sign
+            painter.drawLine(QPointF(x1 + ox, y1 + oy), QPointF(x2 + ox, y2 + oy))
+
+    def _draw_aromatic(self, painter, x1, y1, x2, y2, color, width, bond=None):
         """Aromatic bond: solid + dashed inner line."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
         if dist < 2:
             return
-        nx, ny = -dy / dist, dx / dist
+        ux, uy = dx / dist, dy / dist
+        nx, ny = -uy, ux
         offset = self._scale * self._double_offset_ratio
+
+        # Determine which side the dashed inner bond should be drawn
+        side = self._double_bond_side(bond, x1, y1, x2, y2, nx, ny)
+        onx, ony = nx * offset * side, ny * offset * side
 
         pen_main = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen_main)
@@ -346,12 +496,12 @@ class MolViewer2D(QWidget):
 
         # Dashed inner bond
         shrink = 0.18
-        ix1 = x1 + dx * shrink + nx * offset
-        iy1 = y1 + dy * shrink + ny * offset
-        ix2 = x2 - dx * shrink + nx * offset
-        iy2 = y2 - dy * shrink + ny * offset
+        ix1 = x1 + dx * shrink + onx
+        iy1 = y1 + dy * shrink + ony
+        ix2 = x2 - dx * shrink + onx
+        iy2 = y2 - dy * shrink + ony
 
-        pen_dash = QPen(color, width * 0.65)
+        pen_dash = QPen(color, max(1.0, width * 0.65))
         pen_dash.setStyle(Qt.PenStyle.DashLine)
         pen_dash.setDashPattern([3.5, 2.5])
         pen_dash.setCapStyle(Qt.PenCapStyle.FlatCap)
@@ -364,44 +514,103 @@ class MolViewer2D(QWidget):
         if bond is None:
             return 1
 
-        # If both atoms in a ring, put inner bond towards ring center
-        a1 = self.molecule.atoms[bond.begin_atom_idx]
-        a2 = self.molecule.atoms[bond.end_atom_idx]
-
+        # If both atoms in a ring, put inner bond towards ring center.
+        # In fused systems, priority is given to the smallest ring containing the bond.
         if hasattr(self.molecule, '_rings') and self.molecule._rings:
+            target_ring = None
+            min_ring_size = 999
+
             for ring in self.molecule._rings:
                 if bond.begin_atom_idx in ring and bond.end_atom_idx in ring:
-                    # Compute ring center
-                    cx_r = sum(self.coords_2d.get(r, (0, 0))[0] for r in ring) / len(ring)
-                    cy_r = sum(self.coords_2d.get(r, (0, 0))[1] for r in ring) / len(ring)
-                    cx_s, cy_s = self._to_screen(cx_r, cy_r)
-                    mx = (x1 + x2) / 2
-                    my = (y1 + y2) / 2
-                    # Dot product to determine side
-                    dot = (cx_s - mx) * nx + (cy_s - my) * ny
-                    return 1 if dot > 0 else -1
+                    if len(ring) < min_ring_size:
+                        min_ring_size = len(ring)
+                        target_ring = ring
+
+            if target_ring:
+                # Compute ring center
+                cx_r = sum(self.coords_2d.get(r, (0, 0))[0] for r in target_ring) / len(target_ring)
+                cy_r = sum(self.coords_2d.get(r, (0, 0))[1] for r in target_ring) / len(target_ring)
+                cx_s, cy_s = self._to_screen(cx_r, cy_r)
+                mx = (x1 + x2) / 2
+                my = (y1 + y2) / 2
+                # Dot product to determine side
+                dot = (cx_s - mx) * nx + (cy_s - my) * ny
+                return 1 if dot > 0 else -1
 
         return 1
 
     # ─── Label Drawing ────────────────────────────────────────────
 
     def _get_font(self):
-        size = max(10, int(self._scale * 0.35))
+        """Get the main atom label font, scaled properly for display and export."""
+        # Use the original (pre-export) scale for font sizing to prevent
+        # disproportionately large labels in high-DPI exports.
+        base_scale = self._original_scale if self._original_scale is not None else self._scale
+        size = max(10, int(base_scale * 0.35))
+        # Clamp for export readability
+        if self._original_scale is not None:
+            size = min(size, 14)
         font = QFont('Arial', size)
         font.setWeight(QFont.Weight.DemiBold)  # Slightly bolder like ChemDraw
         return font
 
     def _get_subscript_font(self):
-        size = max(7, int(self._scale * 0.24))
+        """Get the subscript font (H count, charges), scaled properly."""
+        base_scale = self._original_scale if self._original_scale is not None else self._scale
+        size = max(6, int(base_scale * 0.20))
+        if self._original_scale is not None:
+            size = min(size, 10)
         font = QFont('Arial', size)
         font.setWeight(QFont.Weight.DemiBold)
         return font
+
+    # ─── Direction-aware H placement (ChemDraw-style) ─────────────
+
+    def _get_h_placement_side(self, atom_idx, visible):
+        """
+        Determine whether H labels should be placed to the LEFT or RIGHT
+        of the heteroatom symbol, based on the average direction of bonds.
+
+        ChemDraw rule: if most bonds approach from the right side, place
+        H on the left (e.g., 'HO', 'HN'). Otherwise, place on the right
+        (e.g., 'OH', 'NH').
+
+        Returns:
+            'right' — H goes after the atom symbol (default: OH, NH)
+            'left'  — H goes before the atom symbol (HO, HN)
+        """
+        if atom_idx not in self.coords_2d:
+            return 'right'
+
+        ax, ay = self.coords_2d[atom_idx]
+        neighbors = self.molecule.get_neighbors(atom_idx)
+        visible_neighbors = [n for n in neighbors if n in visible and n in self.coords_2d]
+
+        if not visible_neighbors:
+            return 'right'
+
+        # Calculate the average x-direction of bonds FROM this atom
+        sum_dx = 0.0
+        for n_idx in visible_neighbors:
+            nx, ny = self.coords_2d[n_idx]
+            sum_dx += (nx - ax)  # Positive = neighbor is to the right
+
+        # If neighbors are mostly to the RIGHT of this atom,
+        # we should put H on the LEFT to avoid overlap
+        if sum_dx > 0.05:
+            return 'left'
+        else:
+            return 'right'
 
     def _draw_all_labels(self, painter, visible, has_label):
         font = self._get_font()
         sub_font = self._get_subscript_font()
         fm = QFontMetrics(font)
         fm_sub = QFontMetrics(sub_font)
+
+        # Gaps for carbon text labels (CH₃, CH₂)
+        char_gap = max(4, int(self._scale * 0.12))
+        sub_gap = max(2, int(self._scale * 0.04))
 
         for idx in visible:
             if not has_label.get(idx, False):
@@ -410,60 +619,256 @@ class MolViewer2D(QWidget):
             mx, my = self.coords_2d[idx]
             sx, sy = self._to_screen(mx, my)
 
-            parts = self._label_parts(atom)
+            # Get label parts (for heteroatoms, H is stripped — drawn as explicit atoms)
+            h_side = self._get_h_placement_side(idx, visible)
+            parts = self._label_parts(atom, h_side)
             color = self._element_color(atom.symbol)
 
-            # Measure total width
+            # Measure total width with gaps
             total_w = 0
-            for text, is_sub in parts:
-                f = sub_font if is_sub else font
+            for i, (text, is_sub) in enumerate(parts):
                 m = fm_sub if is_sub else fm
                 total_w += m.horizontalAdvance(text)
+                if i > 0:
+                    if is_sub:
+                        total_w += sub_gap
+                    elif not parts[i-1][1]:
+                        total_w += char_gap
 
             h = fm.height()
 
-            # Background clearing rectangle (covers bonds behind label)
+            # Background clearing rectangle
             pad = self._label_padding + 1
             bg_rect = QRectF(sx - total_w / 2 - pad, sy - h / 2 - 2, total_w + pad * 2, h + 4)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(self.bg_color))
             painter.drawRect(bg_rect)
 
-            # Draw label parts
+            # Draw label parts — use proper baseline centering
             cx = sx - total_w / 2
-            for text, is_sub in parts:
+            # Proper vertical centering: baseline should be at sy + (ascent - descent)/2
+            baseline_offset = (fm.ascent() - fm.descent()) / 2
+
+            for i, (text, is_sub) in enumerate(parts):
                 f = sub_font if is_sub else font
                 m = fm_sub if is_sub else fm
                 tw = m.horizontalAdvance(text)
+
+                if i > 0:
+                    if is_sub:
+                        cx += sub_gap
+                    elif not parts[i-1][1]:
+                        cx += char_gap
 
                 painter.setFont(f)
                 painter.setPen(color)
 
                 if is_sub:
-                    # Subscript: drop baseline
-                    painter.drawText(QPointF(cx, sy + h * 0.35), text)
+                    # Subscript: shifted down from main baseline
+                    sub_baseline = (fm_sub.ascent() - fm_sub.descent()) / 2
+                    painter.drawText(QPointF(cx, sy + sub_baseline + fm.descent() + 2), text)
                 else:
-                    painter.drawText(QPointF(cx, sy + h * 0.3), text)
+                    painter.drawText(QPointF(cx, sy + baseline_offset), text)
                 cx += tw
 
-    def _label_parts(self, atom):
-        """Return list of (text, is_subscript) for the atom label."""
-        parts = [(atom.symbol, False)]
-        h_count = atom.num_implicit_h
+        # Draw explicit H atoms for heteroatoms AFTER all labels (so H has bg clearing)
+        self._draw_explicit_h_atoms(painter, visible, has_label, font, fm)
 
-        if self.show_hydrogens or atom.symbol != 'C':
+    def _draw_explicit_h_atoms(self, painter, visible, has_label, font, fm):
+        """Draw explicit hydrogen atoms as separate vertices with short bonds
+        for heteroatoms (N, O, S, P, etc.). This solves the label overlap
+        problem by giving each H its own spatial position and bond line.
+        """
+        h_color = self._element_color('H')
+        bond_color = self._bond_color()
+        bw = self._bond_width()
+        h = fm.height()
+        baseline_offset = (fm.ascent() - fm.descent()) / 2
+
+        # Short bond length for the explicit H (fraction of normal bond)
+        h_bond_len = self._scale * 0.45
+
+        for idx in visible:
+            if not has_label.get(idx, False):
+                continue
+            atom = self.molecule.atoms[idx]
+
+            # Only draw explicit H for heteroatoms (not C, not H itself)
+            if atom.symbol == 'C' or atom.symbol == 'H':
+                continue
+
+            h_count = self._get_total_h_count(atom)
+            if h_count == 0:
+                continue
+
+            mx, my = self.coords_2d[idx]
+            sx, sy = self._to_screen(mx, my)
+
+            # Compute the label half-width for this atom to offset bond start
+            label_half_w = fm.horizontalAdvance(atom.symbol) / 2 + self._label_padding
+
+            # Get the direction to place H atoms (opposite of bonds)
+            h_positions = self._compute_h_positions(idx, visible, h_count, h_bond_len)
+
+            for h_pos_x, h_pos_y in h_positions:
+                # Calculate direction from atom to H
+                dx = h_pos_x - sx
+                dy = h_pos_y - sy
+                dist = math.hypot(dx, dy)
+                if dist < 1:
+                    continue
+
+                # Bond starts from the EDGE of the atom label, not center
+                bond_start_x = sx + (dx / dist) * label_half_w
+                bond_start_y = sy + (dy / dist) * label_half_w
+
+                # Bond ends before the H label center
+                h_tw = fm.horizontalAdvance('H')
+                h_label_half = h_tw / 2 + self._label_padding
+                bond_end_x = h_pos_x - (dx / dist) * h_label_half
+                bond_end_y = h_pos_y - (dy / dist) * h_label_half
+
+                # Draw bond line (from atom label edge to H label edge)
+                pen = QPen(bond_color, bw * 0.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(bond_start_x, bond_start_y),
+                                 QPointF(bond_end_x, bond_end_y))
+
+                # Clear background behind H label
+                h_label = 'H'
+                tw = fm.horizontalAdvance(h_label)
+                pad = self._label_padding
+                bg_rect = QRectF(h_pos_x - tw / 2 - pad, h_pos_y - h / 2 - 2,
+                                 tw + pad * 2, h + 4)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(self.bg_color))
+                painter.drawRect(bg_rect)
+
+                # Draw H label — centered at H position
+                painter.setFont(font)
+                painter.setPen(h_color)
+                painter.drawText(QPointF(h_pos_x - tw / 2, h_pos_y + baseline_offset), h_label)
+
+    def _compute_h_positions(self, atom_idx, visible, h_count, h_bond_len):
+        """Compute screen positions for explicit H atoms around a heteroatom.
+
+        Places H atoms in gaps between existing bonds, or at standard
+        angles if there's only one bond.
+        """
+        ax, ay = self.coords_2d[atom_idx]
+        sx, sy = self._to_screen(ax, ay)
+
+        # Collect angles of existing bonds
+        neighbors = self.molecule.get_neighbors(atom_idx)
+        visible_neighbors = [n for n in neighbors if n in visible and n in self.coords_2d]
+
+        bond_angles = []
+        for n_idx in visible_neighbors:
+            nx, ny = self.coords_2d[n_idx]
+            nsx, nsy = self._to_screen(nx, ny)
+            angle = math.atan2(nsy - sy, nsx - sx)
+            bond_angles.append(angle)
+
+        positions = []
+
+        if not bond_angles:
+            # No bonds: place H below
+            positions.append((sx, sy + h_bond_len))
+        elif len(bond_angles) == 1:
+            # One bond: place H(s) at ~120° from the bond
+            base_angle = bond_angles[0] + math.pi  # opposite direction
             if h_count == 1:
-                parts.append(('H', False))
-            elif h_count > 1:
-                parts.append(('H', False))
-                parts.append((str(h_count), True))
+                positions.append((sx + h_bond_len * math.cos(base_angle),
+                                  sy + h_bond_len * math.sin(base_angle)))
+            elif h_count == 2:
+                for offset in (-math.pi / 3, math.pi / 3):
+                    a = base_angle + offset
+                    positions.append((sx + h_bond_len * math.cos(a),
+                                      sy + h_bond_len * math.sin(a)))
+            else:
+                for i in range(h_count):
+                    a = base_angle + (i - (h_count - 1) / 2) * (math.pi / 3)
+                    positions.append((sx + h_bond_len * math.cos(a),
+                                      sy + h_bond_len * math.sin(a)))
+        else:
+            # Multiple bonds: find the largest angular gap and place H there
+            bond_angles.sort()
+            # Find gaps
+            gaps = []
+            for i in range(len(bond_angles)):
+                a1 = bond_angles[i]
+                a2 = bond_angles[(i + 1) % len(bond_angles)]
+                gap = (a2 - a1) % (2 * math.pi)
+                gaps.append((gap, a1))
 
+            # Sort by gap size (largest first)
+            gaps.sort(key=lambda g: g[0], reverse=True)
+
+            placed = 0
+            for gap_size, start_angle in gaps:
+                if placed >= h_count:
+                    break
+                # Place H(s) in this gap
+                n_in_gap = min(h_count - placed, 1)  # One H per gap
+                mid_angle = start_angle + gap_size / 2
+                positions.append((sx + h_bond_len * math.cos(mid_angle),
+                                  sy + h_bond_len * math.sin(mid_angle)))
+                placed += 1
+
+        return positions[:h_count]
+
+    def _get_total_h_count(self, atom):
+        """Get total hydrogen count (implicit + explicit structural H)."""
+        h_count = atom.num_implicit_h
+        for n_idx in self.molecule.get_neighbors(atom.index):
+            if self.molecule.atoms[n_idx].symbol == 'H':
+                h_count += 1
+        return h_count
+
+    def _label_parts(self, atom, h_side='right'):
+        """Return list of (text, is_subscript) for the atom label.
+
+        For heteroatoms (N, O, S, etc.): returns ONLY the atom symbol.
+        H atoms are drawn as explicit vertices by _draw_explicit_h_atoms().
+
+        For carbon atoms: returns the full label with H count (CH₃, CH₂, etc.)
+        using text-based rendering with gaps.
+        """
+        h_count = self._get_total_h_count(atom)
+
+        # For heteroatoms: H drawn as explicit atoms, not in label
+        if atom.symbol != 'C' and atom.symbol != 'H':
+            parts = [(atom.symbol, False)]
+            # Add charge
+            if atom.formal_charge > 0:
+                ch = '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
+                parts.append((ch, True))
+            elif atom.formal_charge < 0:
+                ch = '-' if atom.formal_charge == -1 else str(atom.formal_charge)
+                parts.append((ch, True))
+            return parts
+
+        # For carbon/H: include H count in text
+        h_parts = []
+        if h_count == 1:
+            h_parts.append(('H', False))
+        elif h_count > 1:
+            h_parts.append(('H', False))
+            h_parts.append((str(h_count), True))
+
+        charge_parts = []
         if atom.formal_charge > 0:
             ch = '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
-            parts.append((ch, True))
+            charge_parts.append((ch, True))
         elif atom.formal_charge < 0:
             ch = '-' if atom.formal_charge == -1 else str(atom.formal_charge)
-            parts.append((ch, True))
+            charge_parts.append((ch, True))
+
+        symbol_part = (atom.symbol, False)
+        if h_side == 'left' and h_parts:
+            parts = h_parts + [symbol_part] + charge_parts
+        else:
+            parts = [symbol_part] + h_parts + charge_parts
 
         return parts
 
@@ -471,11 +876,17 @@ class MolViewer2D(QWidget):
         """Simple flat label for shrink calculations."""
         label = atom.symbol
         h_count = atom.num_implicit_h
-        if self.show_hydrogens or atom.symbol != 'C':
-            if h_count == 1:
-                label += 'H'
-            elif h_count > 1:
-                label += f'H{h_count}'
+
+        # Merge explicit connected structural Hydrogens for flat label string
+        for n_idx in self.molecule.get_neighbors(atom.index):
+            if self.molecule.atoms[n_idx].symbol == 'H':
+                h_count += 1
+
+        # Always include H for labeled atoms (skeletal formula standard)
+        if h_count == 1:
+            label += 'H'
+        elif h_count > 1:
+            label += f'H{h_count}'
         if atom.formal_charge > 0:
             label += '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
         elif atom.formal_charge < 0:
@@ -502,6 +913,168 @@ class MolViewer2D(QWidget):
             painter.setBrush(QBrush(QColor(255, 200, 50, 35)))
             painter.drawEllipse(QPointF(sx, sy), r, r)
 
+    # ─── Distance / Angle Measurement ─────────────────────────────
+
+    def _draw_measurement_overlay(self, painter, visible):
+        """Draw distance or angle measurement when 2 or 3 atoms are selected."""
+        selected = sorted(self.selected_atoms)
+        if len(selected) == 2:
+            self._draw_distance(painter, selected[0], selected[1])
+        elif len(selected) == 3:
+            self._draw_angle(painter, selected[0], selected[1], selected[2])
+
+    def _draw_distance(self, painter, idx1, idx2):
+        """Draw a dashed line between two selected atoms with distance label."""
+        if idx1 not in self.coords_2d or idx2 not in self.coords_2d:
+            return
+
+        mx1, my1 = self.coords_2d[idx1]
+        mx2, my2 = self.coords_2d[idx2]
+        sx1, sy1 = self._to_screen(mx1, my1)
+        sx2, sy2 = self._to_screen(mx2, my2)
+
+        # Dashed measurement line
+        pen = QPen(QColor(255, 160, 0, 180), 1.5)
+        pen.setStyle(Qt.PenStyle.DashDotLine)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(sx1, sy1), QPointF(sx2, sy2))
+
+        # Distance label
+        dist_2d = math.hypot(mx2 - mx1, my2 - my1)
+        # Try 3D distance if available
+        a1 = self.molecule.atoms[idx1]
+        a2 = self.molecule.atoms[idx2]
+        label = ""
+        if a1.has_coords and a2.has_coords:
+            dist_3d = math.sqrt((a2.x - a1.x)**2 + (a2.y - a1.y)**2 + (a2.z - a1.z)**2)
+            label = f"{dist_3d:.2f} Å"
+        else:
+            label = f"{dist_2d:.2f}"
+
+        mid_x = (sx1 + sx2) / 2
+        mid_y = (sy1 + sy2) / 2
+
+        font = QFont('Arial', 10)
+        font.setBold(True)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(label)
+
+        # Background pill
+        bg = QRectF(mid_x - tw / 2 - 4, mid_y - 9, tw + 8, 18)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(40, 40, 60, 200)))
+        painter.drawRoundedRect(bg, 4, 4)
+
+        # Text
+        painter.setPen(QColor(255, 200, 80))
+        painter.drawText(QPointF(mid_x - tw / 2, mid_y + 5), label)
+
+    def _draw_angle(self, painter, idx1, idx2, idx3):
+        """Draw angle measurement arc and label for three selected atoms."""
+        for idx in (idx1, idx2, idx3):
+            if idx not in self.coords_2d:
+                return
+
+        # Vertex is the middle atom
+        ax, ay = self.coords_2d[idx1]
+        bx, by = self.coords_2d[idx2]
+        cx, cy = self.coords_2d[idx3]
+
+        # Try 3D angle
+        a1 = self.molecule.atoms[idx1]
+        a2 = self.molecule.atoms[idx2]
+        a3 = self.molecule.atoms[idx3]
+        if a1.has_coords and a2.has_coords and a3.has_coords:
+            v1 = (a1.x - a2.x, a1.y - a2.y, a1.z - a2.z)
+            v2 = (a3.x - a2.x, a3.y - a2.y, a3.z - a2.z)
+            dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+            m1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+            m2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+            if m1 > 0 and m2 > 0:
+                cos_a = max(-1, min(1, dot / (m1 * m2)))
+                angle_deg = math.degrees(math.acos(cos_a))
+            else:
+                angle_deg = 0
+        else:
+            # 2D angle
+            v1 = (ax - bx, ay - by)
+            v2 = (cx - bx, cy - by)
+            dot = v1[0]*v2[0] + v1[1]*v2[1]
+            m1 = math.hypot(*v1)
+            m2 = math.hypot(*v2)
+            if m1 > 0 and m2 > 0:
+                cos_a = max(-1, min(1, dot / (m1 * m2)))
+                angle_deg = math.degrees(math.acos(cos_a))
+            else:
+                angle_deg = 0
+
+        # Draw label at vertex
+        sx, sy = self._to_screen(bx, by)
+        label = f"{angle_deg:.1f}°"
+
+        font = QFont('Arial', 10)
+        font.setBold(True)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(label)
+
+        lx, ly = sx + 15, sy - 15
+        bg = QRectF(lx - 4, ly - 12, tw + 8, 18)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(40, 40, 60, 200)))
+        painter.drawRoundedRect(bg, 4, 4)
+
+        painter.setPen(QColor(100, 255, 180))
+        painter.drawText(QPointF(lx, ly + 2), label)
+
+    # ─── Hover Tooltip ────────────────────────────────────────────
+
+    def _draw_hover_tooltip(self, painter):
+        """Draw a tooltip near the hovered atom showing basic info."""
+        if self._hovered_atom < 0 or not self.molecule:
+            return
+        if self._hovered_atom >= len(self.molecule.atoms):
+            return
+        if self._hovered_atom not in self.coords_2d:
+            return
+
+        atom = self.molecule.atoms[self._hovered_atom]
+        mx, my = self.coords_2d[self._hovered_atom]
+        sx, sy = self._to_screen(mx, my)
+
+        lines = [
+            f"{atom.symbol}{self._hovered_atom + 1}",
+            f"q: {atom.partial_charge:.3f}" if atom.partial_charge != 0.0 else "",
+        ]
+        if atom.has_coords:
+            lines.append(f"({atom.x:.2f}, {atom.y:.2f}, {atom.z:.2f})")
+        lines = [l for l in lines if l]
+
+        font = QFont('Segoe UI', 9)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        line_h = fm.height()
+        max_w = max(fm.horizontalAdvance(l) for l in lines) if lines else 40
+        box_w = max_w + 12
+        box_h = line_h * len(lines) + 8
+
+        # Position tooltip above-right of atom
+        tx = sx + 12
+        ty = sy - box_h - 8
+
+        # Background
+        painter.setPen(QPen(QColor(100, 140, 255, 180), 1))
+        painter.setBrush(QBrush(QColor(20, 24, 45, 220)))
+        painter.drawRoundedRect(QRectF(tx, ty, box_w, box_h), 5, 5)
+
+        # Text
+        painter.setPen(QColor(230, 230, 255))
+        y = ty + line_h
+        for line in lines:
+            painter.drawText(QPointF(tx + 6, y), line)
+            y += line_h
+
     # ─── Overlay ──────────────────────────────────────────────────
 
     def _draw_overlay(self, painter):
@@ -527,7 +1100,14 @@ class MolViewer2D(QWidget):
 
     # ─── Image Export ─────────────────────────────────────────────
 
-    def export_image(self, filepath, dpi=300, bg_white=False):
+    def export_image(self, filepath, dpi=300, bg_white=True):
+        """Export the 2D view as a high-resolution image.
+
+        Args:
+            filepath: Output file path.
+            dpi: Resolution in dots per inch.
+            bg_white: If True (default), use white background for publication quality.
+        """
         scale_factor = dpi / 96.0
         img_w = int(self.width() * scale_factor)
         img_h = int(self.height() * scale_factor)
@@ -541,6 +1121,10 @@ class MolViewer2D(QWidget):
         orig_ox = self._offset_x
         orig_oy = self._offset_y
 
+        # Store original scale so _get_font() uses it instead of the inflated one
+        self._original_scale = orig_scale
+
+        # Always default to white background for professional exports
         if bg_white:
             self.bg_color = QColor(255, 255, 255)
 
@@ -552,6 +1136,8 @@ class MolViewer2D(QWidget):
         self._render(painter, img_w, img_h, is_export=True)
         painter.end()
 
+        # Restore
+        self._original_scale = None
         self.bg_color = orig_bg
         self._scale = orig_scale
         self._offset_x = orig_ox
@@ -562,12 +1148,33 @@ class MolViewer2D(QWidget):
     # ─── Mouse Interaction ────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        """Handle mouse press: start pan or rubber-band selection."""
         self._last_mouse_pos = event.position()
         self._mouse_button = event.button()
 
+        # Shift + left-click begins rubber-band selection (PyMOL-style)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self._is_selecting = True
+            self._sel_rect_origin = event.position()
+            self._sel_rect_end = event.position()
+
     def mouseMoveEvent(self, event):
+        """Handle mouse move: pan, update rubber-band, or hover."""
+        # Hover detection (always active)
         if self._last_mouse_pos is None:
+            old_hover = self._hovered_atom
+            self._hovered_atom = self._hit_test_2d(event.position())
+            if self._hovered_atom != old_hover:
+                self.update()
             return
+
+        # Rubber-band selection drag
+        if self._is_selecting:
+            self._sel_rect_end = event.position()
+            self.update()
+            return
+
         dx = event.position().x() - self._last_mouse_pos.x()
         dy = event.position().y() - self._last_mouse_pos.y()
 
@@ -579,6 +1186,43 @@ class MolViewer2D(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        """Handle mouse release: commit selection rect or deselect on click."""
+        # --- Finish rubber-band selection ---
+        if self._is_selecting and event.button() == Qt.MouseButton.LeftButton:
+            self._commit_rubber_band_selection()
+            self._is_selecting = False
+            self._sel_rect_origin = None
+            self._sel_rect_end = None
+            self._last_mouse_pos = None
+            self._mouse_button = None
+            self.update()
+            return
+
+        # Detect simple click (<3px movement)
+        was_click = False
+        if self._last_mouse_pos is not None:
+            moved = (abs(event.position().x() - self._last_mouse_pos.x()) +
+                     abs(event.position().y() - self._last_mouse_pos.y()))
+            was_click = moved < 3
+
+        if was_click and event.button() == Qt.MouseButton.LeftButton:
+            # Hit-test: find nearest atom under cursor
+            atom_idx = self._hit_test_2d(event.position())
+            if atom_idx >= 0:
+                # Toggle single atom selection
+                if atom_idx in self.selected_atoms:
+                    self.selected_atoms.discard(atom_idx)
+                else:
+                    self.selected_atoms.add(atom_idx)
+                self.selection_changed.emit(set(self.selected_atoms))
+                self.update()
+            else:
+                # Click on empty space → clear selection
+                if self.selected_atoms:
+                    self.selected_atoms.clear()
+                    self.selection_changed.emit(set())
+                    self.update()
+
         self._last_mouse_pos = None
         self._mouse_button = None
 
@@ -598,6 +1242,106 @@ class MolViewer2D(QWidget):
         self._offset_y = pos.y() + old_my * self._scale
 
         self.update()
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts.
+
+        F      — Fit molecule to screen
+        R      — Reset view
+        Delete — Delete selected atoms
+        """
+        key = event.key()
+        if key == Qt.Key.Key_Delete and self.selected_atoms:
+            self.delete_requested.emit(set(self.selected_atoms))
+        elif key == Qt.Key.Key_F:
+            self._auto_fit()
+            self.update()
+        elif key == Qt.Key.Key_R:
+            self._auto_fit()
+            self.update()
+        else:
+            super().keyPressEvent(event)
+
+    # ─── Rubber-band Helpers ──────────────────────────────────────
+
+    def _hit_test_2d(self, pos):
+        """
+        Find the atom closest to the screen position *pos*, within a
+        tolerance distance.  Returns the atom index or -1 if nothing
+        is close enough.
+        """
+        if not self.molecule or not self.coords_2d:
+            return -1
+
+        best_idx = -1
+        best_dist_sq = float('inf')
+        # Tolerance in screen pixels
+        tolerance = max(12, self._scale * 0.35)
+        tol_sq = tolerance * tolerance
+
+        for atom in self.molecule.atoms:
+            if atom.index not in self.coords_2d:
+                continue
+            if atom.symbol == 'H' and not self.show_hydrogens:
+                continue
+            mx, my = self.coords_2d[atom.index]
+            sx, sy = self._to_screen(mx, my)
+            dx = pos.x() - sx
+            dy = pos.y() - sy
+            dist_sq = dx * dx + dy * dy
+            if dist_sq < tol_sq and dist_sq < best_dist_sq:
+                best_dist_sq = dist_sq
+                best_idx = atom.index
+        return best_idx
+
+    def _commit_rubber_band_selection(self):
+        """
+        Finalise a Shift+drag selection: find all atoms whose 2D screen
+        positions fall inside the rubber-band rectangle and add them to
+        ``selected_atoms``.  Emits ``selection_changed``.
+        """
+        if not self._sel_rect_origin or not self._sel_rect_end:
+            return
+
+        x1 = min(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y1 = min(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        x2 = max(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y2 = max(self._sel_rect_origin.y(), self._sel_rect_end.y())
+
+        # Tiny rectangle → clear selection
+        if (x2 - x1) < 4 and (y2 - y1) < 4:
+            self.selected_atoms.clear()
+            self.selection_changed.emit(set())
+            return
+
+        rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+        newly_selected = set()
+
+        visible = self._get_visible_atoms() if self.molecule else set()
+        for idx in visible:
+            if idx not in self.coords_2d:
+                continue
+            mx, my = self.coords_2d[idx]
+            sx, sy = self._to_screen(mx, my)
+            if rect.contains(QPointF(sx, sy)):
+                newly_selected.add(idx)
+
+        if newly_selected:
+            self.selected_atoms |= newly_selected
+        self.selection_changed.emit(set(self.selected_atoms))
+
+    def _draw_rubber_band(self, painter):
+        """Draw the semi-transparent selection rectangle overlay."""
+        x1 = min(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y1 = min(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        x2 = max(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y2 = max(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+
+        painter.setPen(QPen(QColor(255, 200, 50, 200), 1.5,
+                            Qt.PenStyle.DashLine))
+        painter.setBrush(QBrush(QColor(255, 200, 50, 40)))
+        painter.drawRect(rect)
 
     # ─── Utils ────────────────────────────────────────────────────
 
@@ -638,25 +1382,25 @@ class MolViewer2D(QWidget):
         # Set up font
         font = QFont('Segoe UI', 14)
         painter.setFont(font)
-        
+
         # Draw protein icon representation
         cx, cy = width / 2, height / 2
-        
+
         # Draw simplified protein representation
         painter.setPen(QPen(QColor(100, 100, 100), 2))
-        
+
         # Draw a simple helix representation
         helix_width = 60
         helix_height = 120
         helix_x = cx - helix_width / 2
         helix_y = cy - helix_height / 2
-        
+
         # Draw helix as a spiral
         for i in range(20):
             y = helix_y + i * (helix_height / 20)
             x_offset = 15 * math.sin(i * 0.5)
             painter.drawEllipse(QPointF(helix_x + helix_width/2 + x_offset, y), 3, 3)
-        
+
         # Draw sheet representation
         sheet_x = cx + 40
         sheet_y = cy - 40
@@ -671,7 +1415,7 @@ class MolViewer2D(QWidget):
         ]
         painter.setBrush(QBrush(QColor(50, 150, 220, 100)))
         painter.drawPolygon(QPolygonF(arrow_points))
-        
+
         # Draw text information
         painter.setPen(QColor(60, 60, 60))
         title_font = QFont('Segoe UI', 16, QFont.Weight.Bold)
@@ -679,31 +1423,31 @@ class MolViewer2D(QWidget):
         title = "Large Protein Structure"
         title_rect = QRectF(0, cy - 180, width, 30)
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter, title)
-        
+
         # Draw stats
         info_font = QFont('Segoe UI', 12)
         painter.setFont(info_font)
         painter.setPen(QColor(80, 80, 80))
-        
+
         num_atoms = len(self.molecule.atoms) if self.molecule else 0
-        num_residues = len(set((a.res_seq, a.chain_id) for a in self.molecule.atoms 
+        num_residues = len(set((a.res_seq, a.chain_id) for a in self.molecule.atoms
                               if hasattr(a, 'res_seq') and hasattr(a, 'chain_id'))) if self.molecule else 0
-        
+
         info_lines = [
             f"Atoms: {num_atoms:,}",
             f"Residues: {num_residues:,}",
             "",
-            "2D representation skipped for performance",
-            "Use 3D viewer for protein visualization"
+            "2D view skipped for large structures (>700 atoms)",
+            "for better performance. Use 3D viewer instead."
         ]
-        
+
         y_offset = cy + 80
         for line in info_lines:
             if line:
                 rect = QRectF(0, y_offset, width, 25)
                 painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, line)
             y_offset += 25
-        
+
         # Draw border
         painter.setPen(QPen(QColor(200, 200, 200), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)

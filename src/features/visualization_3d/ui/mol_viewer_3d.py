@@ -12,11 +12,11 @@ Features:
 
 import math
 import numpy as np
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
-from PySide6.QtGui import (
+from src.shared.qt_compat import QWidget, Qt, QTimer, Signal, QPointF, QRectF
+from src.shared.qt_compat import (
     QPainter, QColor, QPen, QBrush, QFont, QWheelEvent,
-    QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath
+    QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath,
+    QMenu, QAction
 )
 from src.shared.ui.theme import COLORS
 
@@ -39,16 +39,33 @@ class MolViewer3D(QWidget):
     """
     Software-rendered 3D molecular viewer with mouse interaction.
     Uses QPainter with QRadialGradient for smooth, realistic sphere rendering.
+
+    Selection
+    ---------
+    **Shift + left-drag** draws a rubber-band rectangle (PyMOL-style).
+    Atoms whose projected screen positions fall inside the rectangle on
+    mouse-release are added to ``selected_atoms``.  A plain left-click on
+    empty space clears the selection.
+
+    Deletion
+    --------
+    Pressing the **Delete** key while atoms are selected emits
+    ``delete_requested`` so the main window can remove those atoms from
+    the domain model and refresh both viewers.
     """
 
+    # --- Signals ---
     atom_hovered = Signal(int)
     atom_clicked = Signal(int)
+    selection_changed = Signal(object)   # emits set of selected atom indices
+    delete_requested = Signal(object)    # emits set of atom indices to delete
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.molecule = None
         self.setMinimumSize(400, 400)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # receive key events
 
         # Camera state
         self.rot_x = 20.0
@@ -64,6 +81,11 @@ class MolViewer3D(QWidget):
         self._hovered_atom = -1
         self.selected_atoms = set()  # Set of atom indices to highlight
 
+        # Rubber-band selection rectangle (screen coords, set during Shift+drag)
+        self._sel_rect_origin = None   # QPointF or None
+        self._sel_rect_end = None      # QPointF or None
+        self._is_selecting = False     # True while Shift+left-drag is active
+
         # Measurement state
         self._measure_atoms = []   # List of picked atoms for distance/angle
         self._measurements = []    # List of completed measurements
@@ -76,9 +98,13 @@ class MolViewer3D(QWidget):
         # Rendering settings
         self.show_hydrogens = True
         self.show_labels = False
-        self.show_sidechains = True
-        self.show_sasa_surface = False
+        self.show_sidechains = False
         self.render_mode = 'ball_and_stick'  # 'spacefill', 'wireframe', 'cartoon', 'ribbon', 'backbone'
+        self.custom_atom_modes = {}
+        self.sidechain_res_vis = {}
+        self.labeled_residues = {}  # mapping res_seq to QColor
+        self.use_ssao = False  # Fake real-time ray-tracing toggle
+        self.use_gouraud = False  # Gouraud normal smoothing toggle
         self.bg_color = QColor(COLORS['viewer_bg'])
 
         # User-adjustable radius scales (1.0 = default)
@@ -95,10 +121,12 @@ class MolViewer3D(QWidget):
         self.molecule = molecule
         if molecule and len(molecule.atoms) > 0:
             self._auto_fit()
-            # Auto-switch to cartoon for proteins
+            # Auto-switch to cartoon for proteins, reset for small molecules
             is_protein = getattr(molecule, 'properties', {}).get('is_protein', False)
             if is_protein:
                 self.render_mode = 'cartoon'
+            else:
+                self.render_mode = 'ball_and_stick'
         self.update()
 
     def clear(self):
@@ -154,6 +182,14 @@ class MolViewer3D(QWidget):
         # --- Protein modes ---
         if self.render_mode in ('cartoon', 'ribbon', 'backbone'):
             self._draw_protein(painter, projected, width, height)
+            
+            # Draw any custom-styled atoms over the protein backbone
+            cam = getattr(self, 'custom_atom_modes', {})
+            if cam:
+                self._draw_bonds(painter, projected, custom_only=True)
+                for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
+                    if atom_idx in cam:
+                        self._draw_atom_sphere(painter, atom_idx, sx, sy, sz, radius, color)
         else:
             # Optimize rendering for large molecules
             num_atoms = len(sorted_atoms)
@@ -179,6 +215,10 @@ class MolViewer3D(QWidget):
                 if atom_idx in self.selected_atoms:
                     self._draw_selection_ring(painter, sx, sy, radius)
 
+        # Draw rubber-band selection rectangle (while Shift+dragging)
+        if self._is_selecting and self._sel_rect_origin and self._sel_rect_end:
+            self._draw_rubber_band(painter)
+
         # Draw SASA point-cloud surface 
         if getattr(self, 'show_sasa_surface', False):
             self._draw_sasa_surface(painter, width, height)
@@ -187,6 +227,18 @@ class MolViewer3D(QWidget):
         if self.show_labels:
             for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
                 self._draw_label(painter, atom_idx, sx, sy, radius)
+
+        # Draw specific residue labels dynamically
+        if hasattr(self, 'labeled_residues') and self.labeled_residues:
+            for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
+                atom = self.molecule.atoms[atom_idx]
+                rs = getattr(atom, 'res_seq', None)
+                if rs is not None and rs in self.labeled_residues:
+                    # To keep it clean, only label the CA atom
+                    if hasattr(atom, 'pdb_name') and atom.pdb_name.strip() == 'CA':
+                        res_name = getattr(atom, 'res_name', 'UNK')
+                        lbl_color = self.labeled_residues[rs]
+                        self._draw_residue_label(painter, f"{res_name}{rs}", sx, sy, lbl_color, radius)
 
         # Draw dummy spheres (COM, centroid, custom)
         self._draw_dummy_spheres(painter, width, height)
@@ -239,9 +291,10 @@ class MolViewer3D(QWidget):
 
             # Display radius with user scale
             base_r = DISPLAY_RADIUS.get(atom.symbol, 0.35)
-            if self.render_mode == 'spacefill':
+            atom_render_mode = getattr(self, 'custom_atom_modes', {}).get(atom.index, self.render_mode)
+            if atom_render_mode == 'spacefill':
                 base_r = atom.element.vdw_radius * 0.5
-            elif self.render_mode == 'wireframe':
+            elif atom_render_mode == 'wireframe':
                 base_r = 0.1
             display_r = base_r * self.zoom * self.sphere_scale
 
@@ -257,152 +310,35 @@ class MolViewer3D(QWidget):
 
         return projected
 
-    def _draw_atom_sphere(self, painter, atom_idx, sx, sy, sz, radius, rgb):
-        """
-        Draw a single atom as a smooth, realistic sphere using QRadialGradient.
-        The gradient simulates Phong-like shading:
-        - Bright specular highlight (upper-left)
-        - Base color in the middle
-        - Dark shadow at the edges
-        """
-        r, g, b = rgb
-
-        # Depth-based shading
-        depth_shade = max(0.5, min(1.0, 1.0 - sz * 0.025))
-        r = int(r * depth_shade)
-        g = int(g * depth_shade)
-        b = int(b * depth_shade)
-
-        # Highlight hovered atom
-        if atom_idx == self._hovered_atom:
-            r = min(255, r + 50)
-            g = min(255, g + 50)
-            b = min(255, b + 50)
-
-        # Clamp
-        r = max(0, min(255, r))
-        g = max(0, min(255, g))
-        b = max(0, min(255, b))
-
-        # ── Smooth radial gradient for sphere illusion ──
-        # Specular highlight position: offset towards top-left
-        highlight_x = sx - radius * 0.30
-        highlight_y = sy - radius * 0.30
-
-        gradient = QRadialGradient(
-            QPointF(sx, sy),        # center of the gradient circle
-            radius,                  # radius of the gradient
-            QPointF(highlight_x, highlight_y)  # focal point (brightest spot)
-        )
-
-        # Specular highlight — bright white-ish center
-        highlight_r = min(255, r + 160)
-        highlight_g = min(255, g + 160)
-        highlight_b = min(255, b + 160)
-
-        # Shadow — dark edge
-        shadow_r = max(0, int(r * 0.20))
-        shadow_g = max(0, int(g * 0.20))
-        shadow_b = max(0, int(b * 0.20))
-
-        # Mid tone
-        mid_r = max(0, min(255, int(r * 0.85)))
-        mid_g = max(0, min(255, int(g * 0.85)))
-        mid_b = max(0, min(255, int(b * 0.85)))
-
-        gradient.setColorAt(0.0, QColor(highlight_r, highlight_g, highlight_b, 255))
-        gradient.setColorAt(0.25, QColor(r, g, b, 255))
-        gradient.setColorAt(0.7, QColor(mid_r, mid_g, mid_b, 255))
-        gradient.setColorAt(1.0, QColor(shadow_r, shadow_g, shadow_b, 255))
-
-        # Draw sphere
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(gradient))
-        painter.drawEllipse(QRectF(sx - radius, sy - radius, radius * 2, radius * 2))
-
-        # ── Extra specular dot for gloss ──
-        if radius > 6:
-            spec_radius = radius * 0.18
-            spec_x = sx - radius * 0.28
-            spec_y = sy - radius * 0.28
-
-            spec_grad = QRadialGradient(
-                QPointF(spec_x, spec_y), spec_radius,
-                QPointF(spec_x, spec_y)
-            )
-            spec_grad.setColorAt(0.0, QColor(255, 255, 255, 180))
-            spec_grad.setColorAt(0.5, QColor(255, 255, 255, 60))
-            spec_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-
-            painter.setBrush(QBrush(spec_grad))
-            painter.drawEllipse(QRectF(
-                spec_x - spec_radius, spec_y - spec_radius,
-                spec_radius * 2, spec_radius * 2
-            ))
+    def _draw_atom_sphere(self, painter, atom_idx, sx, sy, sz, radius, rgb, alpha=1.0):
+        from src.features.visualization_3d.services.atom_rendering import draw_atom_sphere
+        draw_atom_sphere(painter, sx, sy, sz, radius, rgb, 
+                         is_hovered=(atom_idx == self._hovered_atom), 
+                         use_ssao=getattr(self, 'use_ssao', False),
+                         alpha=alpha)
 
     def _draw_selection_ring(self, painter, sx, sy, radius):
-        """Draw a glowing yellow ring around a selected atom."""
-        ring_r = radius + max(3, radius * 0.25)
-        pen = QPen(QColor(255, 200, 50, 200), max(2, radius * 0.12))
-        painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(255, 200, 50, 30)))
-        painter.drawEllipse(QRectF(sx - ring_r, sy - ring_r, ring_r * 2, ring_r * 2))
+        from src.features.visualization_3d.services.atom_rendering import draw_selection_ring
+        draw_selection_ring(painter, sx, sy, radius)
 
     def _draw_sasa_surface(self, painter, width, height):
-        """Projects and renders the 3D analytical point-cloud surface for solvent accessibility."""
-        if not self.molecule:
-            return
-            
-        cx = width / 2 + self.pan_x
-        cy = height / 2 + self.pan_y
-
-        cos_x = math.cos(math.radians(self.rot_x))
-        sin_x = math.sin(math.radians(self.rot_x))
-        cos_y = math.cos(math.radians(self.rot_y))
-        sin_y = math.sin(math.radians(self.rot_y))
-        
-        # Optimize dot sizes based on scale
-        dot_r = max(1, min(3, self.zoom * 0.05))
-        
-        painter.setPen(Qt.PenStyle.NoPen)
-        for atom in self.molecule.atoms:
-            if not getattr(atom, 'sasa_points', None):
-                continue
-                
-            # Restrict SASA render to active selection if toggle is enabled
-            if getattr(self, 'show_sasa_selected_only', False) and self.selected_atoms:
-                if atom.index not in self.selected_atoms:
-                    continue
-                
-            color = _hex_to_rgb(atom.element.color)
-            # Semi-transparent dots colored like the parent atom
-            brush = QBrush(QColor(color[0], color[1], color[2], 120))
-            painter.setBrush(brush)
-            
-            for (x, y, z) in atom.sasa_points:
-                # Same projection math
-                x1 = x * cos_y + z * sin_y
-                z1 = -x * sin_y + z * cos_y
-                y1 = y * cos_x - z1 * sin_x
-                z2 = y * sin_x + z1 * cos_x
-
-                sx = cx + x1 * self.zoom
-                sy = cy - y1 * self.zoom
-                
-                # Draw small rect (faster than ellipse for point clouds)
-                painter.drawRect(QRectF(sx - dot_r/2, sy - dot_r/2, dot_r, dot_r))
+        from src.features.visualization_3d.services.atom_rendering import draw_sasa_surface
+        draw_sasa_surface(painter, self.molecule, width, height, 
+                          self.pan_x, self.pan_y, self.rot_x, self.rot_y, self.zoom, 
+                          self.selected_atoms, getattr(self, 'show_sasa_selected_only', False))
 
     def set_selected(self, atom_indices):
         """Set which atoms are highlighted (from console select commands)."""
         self.selected_atoms = set(atom_indices)
         self.update()
 
-    def _draw_bonds(self, painter, projected):
+    def _draw_bonds(self, painter, projected, custom_only=False):
         """Draw bonds as lines/cylinders between atoms."""
         if not self.molecule:
             return
 
         proj_map = {p[0]: p for p in projected}
+        cam = getattr(self, 'custom_atom_modes', {})
 
         for bond in self.molecule.bonds:
             i = bond.begin_atom_idx
@@ -411,17 +347,36 @@ class MolViewer3D(QWidget):
             if i not in proj_map or j not in proj_map:
                 continue
 
+            if custom_only and i not in cam and j not in cam:
+                continue
+
             _, x1, y1, z1, r1, c1 = proj_map[i]
             _, x2, y2, z2, r2, c2 = proj_map[j]
 
             avg_z = (z1 + z2) / 2
             depth_shade = max(0.35, min(1.0, 1.0 - avg_z * 0.025))
 
+            bond_render_mode = self.render_mode
+            cam = getattr(self, 'custom_atom_modes', {})
+            
+            is_custom = False
+            if i in cam and j in cam:
+                bond_render_mode = cam[i]
+                is_custom = True
+            elif i in cam:
+                bond_render_mode = cam[i]
+                is_custom = True
+            elif j in cam:
+                bond_render_mode = cam[j]
+                is_custom = True
+
             base_width = max(2, self.zoom * 0.07 * self.stick_scale)
-            if self.render_mode == 'wireframe':
-                base_width = max(1, self.zoom * 0.03 * self.line_scale)
-            elif self.render_mode == 'spacefill':
+            if bond_render_mode == 'wireframe':
+                base_width = max(1.5, self.zoom * 0.04 * self.line_scale)
+            elif bond_render_mode == 'spacefill':
                 base_width = max(1, self.zoom * 0.04 * self.stick_scale)
+            elif bond_render_mode == 'ball_and_stick':
+                base_width = max(3, self.zoom * 0.1 * self.stick_scale)
 
             if bond.is_double or bond.order == 2.0:
                 dx = y2 - y1
@@ -435,7 +390,7 @@ class MolViewer3D(QWidget):
                     ox = dx * offset * sign
                     oy = dy * offset * sign
                     self._draw_bond_line(painter, x1+ox, y1+oy, x2+ox, y2+oy,
-                                         c1, c2, base_width * 0.55, depth_shade)
+                                         c1, c2, base_width * 0.55, depth_shade, is_custom=is_custom)
 
             elif bond.is_triple or bond.order == 3.0:
                 dx = y2 - y1
@@ -446,12 +401,12 @@ class MolViewer3D(QWidget):
                 offset = base_width * 1.3
 
                 self._draw_bond_line(painter, x1, y1, x2, y2,
-                                     c1, c2, base_width * 0.5, depth_shade)
+                                     c1, c2, base_width * 0.5, depth_shade, is_custom=is_custom)
                 for sign in (-1, 1):
                     ox = dx * offset * sign
                     oy = dy * offset * sign
                     self._draw_bond_line(painter, x1+ox, y1+oy, x2+ox, y2+oy,
-                                         c1, c2, base_width * 0.45, depth_shade)
+                                         c1, c2, base_width * 0.45, depth_shade, is_custom=is_custom)
             elif bond.is_aromatic or bond.order == 1.5:
                 dx = y2 - y1
                 dy = -(x2 - x1)
@@ -461,128 +416,36 @@ class MolViewer3D(QWidget):
                 offset = base_width * 0.7
 
                 self._draw_bond_line(painter, x1, y1, x2, y2,
-                                     c1, c2, base_width * 0.7, depth_shade)
+                                     c1, c2, base_width * 0.7, depth_shade, is_custom=is_custom)
                 
                 ox = dx * offset
                 oy = dy * offset
                 self._draw_bond_line(painter, x1+ox, y1+oy, x2+ox, y2+oy,
-                                     c1, c2, base_width * 0.4, depth_shade, dashed=True)
+                                     c1, c2, base_width * 0.4, depth_shade, dashed=True, is_custom=is_custom)
             else:
                 self._draw_bond_line(painter, x1, y1, x2, y2,
-                                     c1, c2, base_width, depth_shade)
+                                     c1, c2, base_width, depth_shade, is_custom=is_custom)
 
-    def _draw_bond_line(self, painter, x1, y1, x2, y2, c1, c2, width, shade, dashed=False):
-        """Draw a split-colored bond line with rounded caps."""
-        mx = (x1 + x2) / 2
-        my = (y1 + y2) / 2
-
-        # Check if we should use theme stick colors instead of atom colors
-        from src.shared.ui.theme import COLORS
-        use_theme_stick_colors = 'stick_default' in COLORS
-        
-        if use_theme_stick_colors:
-            # Use theme stick colors
-            stick_color_hex = COLORS.get('stick_default', '#808080')
-            stick_rgb = _hex_to_rgb(stick_color_hex)
-            
-            r, g, b = stick_rgb
-            color = QColor(
-                max(0, min(255, int(r*shade))),
-                max(0, min(255, int(g*shade))),
-                max(0, min(255, int(b*shade)))
-            )
-            pen = QPen(color, max(1, width))
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            if dashed:
-                pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        else:
-            # Use atom colors (original behavior)
-            r1, g1, b1 = c1
-            color1 = QColor(
-                max(0, min(255, int(r1*shade))),
-                max(0, min(255, int(g1*shade))),
-                max(0, min(255, int(b1*shade)))
-            )
-            pen1 = QPen(color1, max(1, width))
-            pen1.setCapStyle(Qt.PenCapStyle.RoundCap)
-            if dashed:
-                pen1.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen1)
-            painter.drawLine(QPointF(x1, y1), QPointF(mx, my))
-
-            r2, g2, b2 = c2
-            color2 = QColor(
-                max(0, min(255, int(r2*shade))),
-                max(0, min(255, int(g2*shade))),
-                max(0, min(255, int(b2*shade)))
-            )
-            pen2 = QPen(color2, max(1, width))
-            pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
-            if dashed:
-                pen2.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen2)
-            painter.drawLine(QPointF(mx, my), QPointF(x2, y2))
+    def _draw_bond_line(self, painter, x1, y1, x2, y2, c1, c2, width, shade, dashed=False, is_custom=False):
+        from src.features.visualization_3d.services.atom_rendering import draw_bond_line
+        draw_bond_line(painter, x1, y1, x2, y2, c1, c2, width, shade, dashed, is_custom)
 
     def _draw_label(self, painter, atom_idx, sx, sy, radius):
+        from src.features.visualization_3d.services.atom_rendering import draw_label
         atom = self.molecule.atoms[atom_idx]
-        label = atom.symbol
+        draw_label(painter, atom.symbol, sx, sy, radius, self.label_font_size, getattr(self, '_export_scale', 1.0))
 
-        # Use fixed font size — does NOT scale with sphere radius or export DPI
-        font_size = self.label_font_size
-        # For exports, keep label size reasonable (don't let DPI scaling blow them up)
-        eff_scale = getattr(self, '_export_scale', 1.0)
-        if eff_scale > 1.0:
-            font_size = max(7, int(font_size * min(eff_scale * 0.5, 1.5)))
-
-        font = QFont('Segoe UI', font_size)
-        font.setBold(True)
-        painter.setFont(font)
-
-        # Offset label just outside the sphere
-        offset_x = int(radius * 0.5 + 2)
-        offset_y = int(-radius * 0.3)
-
-        # Drop shadow for readability
-        painter.setPen(QColor(0, 0, 0, 180))
-        painter.drawText(int(sx + offset_x + 1), int(sy + offset_y + 1), label)
-        painter.setPen(QColor(255, 255, 255, 230))
-        painter.drawText(int(sx + offset_x), int(sy + offset_y), label)
+    def _draw_residue_label(self, painter, text, sx, sy, color, radius):
+        from src.features.visualization_3d.services.atom_rendering import draw_residue_label
+        draw_residue_label(painter, text, sx, sy, color, radius, self.label_font_size, getattr(self, '_export_scale', 1.0))
 
     def _draw_overlay(self, painter):
-        if not self.molecule:
-            return
-
-        font = QFont('Segoe UI', 11)
-        painter.setFont(font)
-        painter.setPen(QColor(COLORS['text_secondary']))
-
-        y = 20
-        texts = [
-            f"Atoms: {len(self.molecule.atoms)}",
-            f"Bonds: {len(self.molecule.bonds)}",
-        ]
-
-        if 0 <= self._hovered_atom < len(self.molecule.atoms):
-            atom = self.molecule.atoms[self._hovered_atom]
-            texts.append("-------------")
-            texts.append(f"Atom: {atom.symbol}{self._hovered_atom + 1}")
-            if atom.has_coords:
-                texts.append(f"Pos: ({atom.x:.2f}, {atom.y:.2f}, {atom.z:.2f})")
-            texts.append(f"Charge: {atom.partial_charge:.4f}")
-
-        for text in texts:
-            painter.drawText(10, y, text)
-            y += 18
+        from src.features.visualization_3d.services.overlay_rendering import draw_overlay
+        draw_overlay(painter, self.molecule, self._hovered_atom)
 
     def _draw_placeholder(self, painter, width, height):
-        font = QFont('Segoe UI', 16)
-        painter.setFont(font)
-        painter.setPen(QColor(COLORS['text_muted']))
-        rect = QRectF(0, 0, width, height)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter,
-                         "Enter a SMILES string and click\n'Convert to 3D' to visualize")
+        from src.features.visualization_3d.services.overlay_rendering import draw_placeholder
+        draw_placeholder(painter, width, height)
 
     # ─── Image Export ─────────────────────────────────────────────
 
@@ -640,12 +503,27 @@ class MolViewer3D(QWidget):
     # ─── Mouse Interaction ────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        """Handle mouse press: start rotation, pan, or rubber-band selection."""
         self._last_mouse_pos = event.position()
         self._mouse_button = event.button()
 
+        # Shift + left-click begins rubber-band selection (PyMOL-style)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self._is_selecting = True
+            self._sel_rect_origin = event.position()
+            self._sel_rect_end = event.position()
+
     def mouseMoveEvent(self, event):
+        """Handle mouse move: rotate, pan, update rubber-band, or hover."""
         if self._last_mouse_pos is None:
             self._detect_hover(event.position())
+            return
+
+        # Rubber-band selection drag
+        if self._is_selecting:
+            self._sel_rect_end = event.position()
+            self.update()  # repaint to show the rectangle
             return
 
         dx = event.position().x() - self._last_mouse_pos.x()
@@ -662,6 +540,18 @@ class MolViewer3D(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        """Handle mouse release: commit selection rect, clicks, measurements."""
+        # --- Finish rubber-band selection ---
+        if self._is_selecting and event.button() == Qt.MouseButton.LeftButton:
+            self._commit_rubber_band_selection()
+            self._is_selecting = False
+            self._sel_rect_origin = None
+            self._sel_rect_end = None
+            self._last_mouse_pos = None
+            self._mouse_button = None
+            self.update()
+            return
+
         was_click = False
         if self._last_mouse_pos is not None:
             moved = (abs(event.position().x() - self._last_mouse_pos.x()) +
@@ -674,6 +564,12 @@ class MolViewer3D(QWidget):
             atom_idx = self._hit_test(event.position())
             if atom_idx >= 0:
                 self.atom_clicked.emit(atom_idx)
+            else:
+                # Click on empty space → clear selection
+                if self.selected_atoms:
+                    self.selected_atoms.clear()
+                    self.selection_changed.emit(set())
+                    self.update()
 
         if was_click and btn == Qt.MouseButton.RightButton:
             atom_idx = self._hit_test(event.position())
@@ -683,6 +579,7 @@ class MolViewer3D(QWidget):
                     self.selected_atoms.discard(atom_idx)
                 else:
                     self.selected_atoms.add(atom_idx)
+                self.selection_changed.emit(set(self.selected_atoms))
                 # Add to measurement picks
                 self._measure_atoms.append(atom_idx)
                 if len(self._measure_atoms) == 2:
@@ -705,6 +602,149 @@ class MolViewer3D(QWidget):
         self.zoom *= factor
         self.zoom = max(5, min(200, self.zoom))
         self.update()
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts — Delete key removes selected atoms."""
+        if event.key() == Qt.Key.Key_Delete and self.selected_atoms:
+            self.delete_requested.emit(set(self.selected_atoms))
+        else:
+            super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Show context menu for selected atoms/residues and general viewer options."""
+        menu = QMenu(self)
+
+        selected_res_seqs = set()
+        bs_action, wf_action, sf_action = None, None, None
+        show_sc_action, hide_sc_action = None, None
+        label_res_action, clear_label_action = None, None
+
+        if self.selected_atoms:
+            # Styles
+            style_menu = menu.addMenu("Set Style")
+            bs_action = style_menu.addAction("Ball and Stick")
+            wf_action = style_menu.addAction("Wireframe")
+            sf_action = style_menu.addAction("Space Fill")
+            
+            # Determine if selected contains residues
+            if self.molecule:
+                for idx in self.selected_atoms:
+                    atom = self.molecule.atoms[idx]
+                    rs = getattr(atom, 'res_seq', None)
+                    if rs is not None:
+                        selected_res_seqs.add(rs)
+            
+            if selected_res_seqs:
+                sidechain_menu = menu.addMenu("Side Chains")
+                show_sc_action = sidechain_menu.addAction("Show")
+                hide_sc_action = sidechain_menu.addAction("Hide")
+
+                # Label action
+                label_res_action = menu.addAction("Label Residue Color...")
+                clear_label_action = menu.addAction("Clear Residue Label")
+            
+            menu.addSeparator()
+
+        ssao_action = menu.addAction("Disable Fake Ray-Tracing" if self.use_ssao else "Enable Fake Ray-Tracing (SSAO)")
+        gouraud_action = menu.addAction("Disable Smooth Shading" if self.use_gouraud else "Enable Smooth Shading (Gouraud)")
+
+        action = menu.exec(event.globalPos())
+        if not action:
+            return
+            
+        if not hasattr(self, 'custom_atom_modes'):
+            self.custom_atom_modes = {}
+        if not hasattr(self, 'sidechain_res_vis'):
+            self.sidechain_res_vis = {}
+            
+        if bs_action and action == bs_action:
+            for idx in self.selected_atoms:
+                self.custom_atom_modes[idx] = 'ball_and_stick'
+            self.update()
+        elif wf_action and action == wf_action:
+            for idx in self.selected_atoms:
+                self.custom_atom_modes[idx] = 'wireframe'
+            self.update()
+        elif sf_action and action == sf_action:
+            for idx in self.selected_atoms:
+                self.custom_atom_modes[idx] = 'spacefill'
+            self.update()
+        elif show_sc_action and action == show_sc_action:
+            for rs in selected_res_seqs:
+                self.sidechain_res_vis[rs] = True
+            self.update()
+        elif hide_sc_action and action == hide_sc_action:
+            for rs in selected_res_seqs:
+                self.sidechain_res_vis[rs] = False
+            self.update()
+        elif label_res_action and action == label_res_action:
+            from PySide6.QtWidgets import QColorDialog
+            color = QColorDialog.getColor(Qt.white, self, "Select Residue Label Color")
+            if color.isValid():
+                for rs in selected_res_seqs:
+                    self.labeled_residues[rs] = color
+                self.update()
+        elif clear_label_action and action == clear_label_action:
+            for rs in selected_res_seqs:
+                if rs in self.labeled_residues:
+                    del self.labeled_residues[rs]
+            self.update()
+        elif action == ssao_action:
+            self.use_ssao = not self.use_ssao
+            self.update()
+        elif action == gouraud_action:
+            self.use_gouraud = not self.use_gouraud
+            self.update()
+
+
+
+    # ─── Rubber-band Helpers ──────────────────────────────────────
+
+    def _commit_rubber_band_selection(self):
+        """
+        Finalise a Shift+drag selection: find all projected atoms whose
+        screen positions fall inside the rubber-band rectangle and add
+        them to ``selected_atoms``.  Emits ``selection_changed``.
+        """
+        if not self._sel_rect_origin or not self._sel_rect_end:
+            return
+
+        # Build normalised rectangle
+        x1 = min(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y1 = min(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        x2 = max(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y2 = max(self._sel_rect_origin.y(), self._sel_rect_end.y())
+
+        # Tiny rectangle treated as a missed click — clear selection
+        if (x2 - x1) < 4 and (y2 - y1) < 4:
+            self.selected_atoms.clear()
+            self.selection_changed.emit(set())
+            return
+
+        rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+        projected = self._project_atoms()
+        newly_selected = set()
+        for atom_idx, sx, sy, sz, radius, color in projected:
+            if rect.contains(QPointF(sx, sy)):
+                newly_selected.add(atom_idx)
+
+        if newly_selected:
+            self.selected_atoms |= newly_selected
+        self.selection_changed.emit(set(self.selected_atoms))
+
+    def _draw_rubber_band(self, painter):
+        """Draw the semi-transparent selection rectangle overlay."""
+        x1 = min(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y1 = min(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        x2 = max(self._sel_rect_origin.x(), self._sel_rect_end.x())
+        y2 = max(self._sel_rect_origin.y(), self._sel_rect_end.y())
+        rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+
+        # Semi-transparent yellow fill
+        painter.setPen(QPen(QColor(255, 200, 50, 200), 1.5,
+                            Qt.PenStyle.DashLine))
+        painter.setBrush(QBrush(QColor(255, 200, 50, 40)))
+        painter.drawRect(rect)
 
     def _detect_hover(self, pos):
         atom_idx = self._hit_test(pos)
@@ -756,6 +796,45 @@ class MolViewer3D(QWidget):
         self.zoom = min(100, max(10, viewport_size * 0.3 / max_span))
         self.pan_x = 0
         self.pan_y = 0
+
+    def focus_on_atoms(self, atom_indices):
+        """Center the view on the given atoms and zoom in."""
+        if not self.molecule or not atom_indices:
+            return
+            
+        coords = []
+        for idx in atom_indices:
+            if idx < len(self.molecule.atoms):
+                atom = self.molecule.atoms[idx]
+                if atom.has_coords:
+                    coords.append([atom.x, atom.y, atom.z])
+                    
+        if not coords:
+            return
+            
+        coords = np.array(coords)
+        centroid = np.mean(coords, axis=0)
+        span = np.max(coords, axis=0) - np.min(coords, axis=0)
+        max_span = max(span) if max(span) > 0 else 1.0
+
+        viewport_size = min(self.width(), self.height())
+        # Zoom tighter than auto_fit (0.4 vs 0.3) but capped at 100
+        self.zoom = min(100, max(15, viewport_size * 0.4 / max_span))
+        
+        cos_x = math.cos(math.radians(self.rot_x))
+        sin_x = math.sin(math.radians(self.rot_x))
+        cos_y = math.cos(math.radians(self.rot_y))
+        sin_y = math.sin(math.radians(self.rot_y))
+        
+        x, y, z = centroid[0], centroid[1], centroid[2]
+        x1 = x * cos_y + z * sin_y
+        z1 = -x * sin_y + z * cos_y
+        y1 = y * cos_x - z1 * sin_x
+        
+        self.pan_x = -x1 * self.zoom
+        self.pan_y = y1 * self.zoom
+        
+        self.update()
 
     def _auto_rotate_step(self):
         self.rot_y += 0.8
@@ -864,21 +943,61 @@ class MolViewer3D(QWidget):
         """Draw protein structures with cartoon/ribbon/backbone representations."""
         if not self.molecule:
             return
-            
-        # Group atoms by residue and chain
-        residues = self._group_residues()
         
-        # Draw based on render mode
-        if self.render_mode == 'cartoon':
-            self._draw_cartoon(painter, residues)
-        elif self.render_mode == 'ribbon':
-            self._draw_ribbon(painter, residues)
-        elif self.render_mode == 'backbone':
-            self._draw_backbone(painter, residues)
+        try:
+            from src.features.visualization_3d.services.protein_rendering import (
+                render_protein_cartoon, render_protein_ribbon
+            )
             
-        # Optionally draw side chains
-        if getattr(self, 'show_sidechains', True):
-            self._draw_side_chains(painter, projected)
+            # Draw based on render mode
+            if self.render_mode == 'cartoon':
+                render_protein_cartoon(
+                    painter=painter,
+                    molecule=self.molecule,
+                    width=width,
+                    height=height,
+                    rot_x=self.rot_x,
+                    rot_y=self.rot_y,
+                    pan_x=self.pan_x,
+                    pan_y=self.pan_y,
+                    zoom=self.zoom,
+                    color_scheme="secondary_structure",
+                    use_ssao=getattr(self, 'use_ssao', False),
+                    use_gouraud=getattr(self, 'use_gouraud', False)
+                )
+            elif self.render_mode == 'ribbon':
+                render_protein_ribbon(
+                    painter=painter,
+                    molecule=self.molecule,
+                    width=width,
+                    height=height,
+                    rot_x=self.rot_x,
+                    rot_y=self.rot_y,
+                    pan_x=self.pan_x,
+                    pan_y=self.pan_y,
+                    zoom=self.zoom,
+                    color_scheme="rainbow"
+                )
+            elif self.render_mode == 'backbone':
+                # Fallback to legacy backbone rendering
+                residues = self._group_residues()
+                self._draw_backbone(painter, residues)
+            
+            # Optionally draw side chains
+            if getattr(self, 'show_sidechains', False) or getattr(self, 'sidechain_res_vis', {}):
+                self._draw_side_chains(painter, projected)
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # Fallback to legacy rendering on error
+            residues = self._group_residues()
+            if self.render_mode == 'cartoon':
+                self._draw_cartoon(painter, residues)
+            elif self.render_mode == 'ribbon':
+                self._draw_ribbon(painter, residues)
+            elif self.render_mode == 'backbone':
+                self._draw_backbone(painter, residues)
 
     def _group_residues(self):
         """Group atoms into residues for protein rendering."""
@@ -1024,11 +1143,13 @@ class MolViewer3D(QWidget):
                 self._draw_pyMOL_coil(painter, segment)
 
     def _draw_pyMOL_helix(self, painter, points):
-        """Draw PyMOL-style alpha helix."""
+        """Draw PyMOL-style alpha helix with configurable color."""
         if len(points) < 2:
             return
         
-        color = QColor(220, 50, 50)  # PyMOL helix red
+        # Use configurable color from theme
+        from src.shared.ui.theme import COLORS
+        color = QColor(COLORS.get('ss_helix', '#dc3232'))  # Configurable helix color
         
         # Create smooth path
         path = QPainterPath()
@@ -1051,11 +1172,13 @@ class MolViewer3D(QWidget):
         painter.drawPath(path)
 
     def _draw_pyMOL_sheet(self, painter, points):
-        """Draw PyMOL-style beta sheet."""
+        """Draw PyMOL-style beta sheet with configurable color."""
         if len(points) < 2:
             return
         
-        color = QColor(50, 150, 220)  # PyMOL sheet blue
+        # Use configurable color from theme
+        from src.shared.ui.theme import COLORS
+        color = QColor(COLORS.get('ss_sheet', '#3296dc'))  # Configurable sheet color
         
         # Create smooth path
         path = QPainterPath()
@@ -1108,11 +1231,13 @@ class MolViewer3D(QWidget):
             painter.drawPolygon(polygon)
 
     def _draw_pyMOL_coil(self, painter, points):
-        """Draw PyMOL-style coil."""
+        """Draw PyMOL-style coil with configurable color."""
         if len(points) < 2:
             return
         
-        color = QColor(180, 180, 180)  # PyMOL coil gray
+        # Use configurable color from theme
+        from src.shared.ui.theme import COLORS
+        color = QColor(COLORS.get('ss_coil', '#b4b4b4'))  # Configurable coil color
         
         # Create smooth path
         path = QPainterPath()
@@ -1248,6 +1373,10 @@ class MolViewer3D(QWidget):
 
     def _draw_side_chains(self, painter, projected):
         """Draw side chain atoms as sticks."""
+        show_all = getattr(self, 'show_sidechains', False)
+        vis_map = getattr(self, 'sidechain_res_vis', {})
+        cam = getattr(self, 'custom_atom_modes', {})
+
         # Create projection map
         proj_map = {i: (atom_idx, sx, sy, sz, radius, color) 
                    for atom_idx, sx, sy, sz, radius, color in projected 
@@ -1257,8 +1386,20 @@ class MolViewer3D(QWidget):
         for bond in self.molecule.bonds:
             a1, a2 = bond.begin_atom_idx, bond.end_atom_idx
             
+            if a1 in cam or a2 in cam:
+                continue
+            
             # Skip if both are backbone atoms (N, CA, C, O)
             atom1, atom2 = self.molecule.atoms[a1], self.molecule.atoms[a2]
+
+            res_seq1 = getattr(atom1, 'res_seq', None)
+            res_seq2 = getattr(atom2, 'res_seq', None)
+            
+            if not show_all:
+                # If neither atom belongs to a residue explicitly marked to show sidechains, skip
+                if not (vis_map.get(res_seq1, False) or vis_map.get(res_seq2, False)):
+                    continue
+
             if (hasattr(atom1, 'pdb_name') and atom1.pdb_name in ['N', 'CA', 'C', 'O'] and
                 hasattr(atom2, 'pdb_name') and atom2.pdb_name in ['N', 'CA', 'C', 'O']):
                 continue
@@ -1274,7 +1415,15 @@ class MolViewer3D(QWidget):
         
         # Draw side chain atoms as small spheres
         for atom_idx, sx, sy, sz, radius, color in projected:
+            if atom_idx in cam:
+                continue
+            
             atom = self.molecule.atoms[atom_idx]
+            
+            res_seq = getattr(atom, 'res_seq', None)
+            if not show_all and not vis_map.get(res_seq, False):
+                continue
+            
             if hasattr(atom, 'pdb_name') and atom.pdb_name in ['N', 'CA', 'C', 'O']:
                 continue  # Skip backbone atoms
             
@@ -1363,7 +1512,7 @@ class MolViewer3D(QWidget):
         
         # Background for indicator
         indicator_text = f"Large molecule ({num_atoms} atoms) - Fast rendering active"
-        text_rect = QRectF(10, self.height() - 30, 300, 25)
+        text_rect = QRectF(10, self.height() - 30, 400, 25)
         
         # Semi-transparent background
         painter.fillRect(text_rect, QColor(0, 0, 0, 120))
@@ -1374,7 +1523,7 @@ class MolViewer3D(QWidget):
                         indicator_text)
 
     def _draw_dummy_spheres(self, painter, width, height):
-        """Draw dummy spheres (COM, centroid, custom) if they exist."""
+        """Draw dummy spheres (COM, centroid, custom) with alpha support and shell sorting."""
         if not self.molecule:
             return
             
@@ -1382,6 +1531,10 @@ class MolViewer3D(QWidget):
         if not hasattr(self.molecule, 'dummy_spheres'):
             return
             
+        dummy_spheres = self.molecule.dummy_spheres
+        if not dummy_spheres:
+            return
+
         cx = width / 2 + self.pan_x
         cy = height / 2 + self.pan_y
 
@@ -1390,42 +1543,70 @@ class MolViewer3D(QWidget):
         cos_y = math.cos(math.radians(self.rot_y))
         sin_y = math.sin(math.radians(self.rot_y))
         
-        for sphere in self.molecule.dummy_spheres:
+        # Sort spheres: Depth sorting first (furthest first), then Radius sorting for concentric shells.
+        # For concentric shells (same position), smaller radius should be drawn inside larger translucent ones
+        # to correctly layer them using the Painter's Algorithm.
+        
+        spheres_with_depth = []
+        for sphere in dummy_spheres:
             if not sphere.visible:
                 continue
-                
-            # Get sphere position and color
+            
             x, y, z = sphere.position
-            radius = sphere.radius
-            
-            # Use theme color for spheres
-            from src.shared.ui.theme import COLORS
-            color_hex = COLORS.get('sphere_default', sphere.color)
-            
-            # Project 3D to 2D
+            # Project 3D to 2D for depth sorting
             x1 = x * cos_y + z * sin_y
             z1 = -x * sin_y + z * cos_y
             y1 = y * cos_x - z1 * sin_x
             z2 = y * sin_x + z1 * cos_x
-
+            
+            spheres_with_depth.append((sphere, z2))
+            
+        # Sort primarily by Z (furthest behind first) and secondarily by Radius (LARGER first)
+        # This ensures outer shells are drawn BEFORE inner shells at same position,
+        # so the inner shell correctly overwrites/layers over the outer shell in the Painter's Algorithm.
+        sorted_spheres = sorted(spheres_with_depth, key=lambda s: (s[1], -s[0].radius))
+        
+        for sphere, sz in sorted_spheres:
+            x, y, z = sphere.position
+            radius = sphere.radius
+            alpha = getattr(sphere, 'alpha', 1.0)
+            
+            # Use theme color if available
+            from src.shared.ui.theme import COLORS
+            color_hex = sphere.color # Use sphere instance color if theme doesn't override
+            if sphere.label == 'COM':
+                color_hex = COLORS.get('sphere_com', color_hex)
+            elif sphere.label == 'Centroid':
+                color_hex = COLORS.get('sphere_centroid', color_hex)
+            
+            # Reproject to screen coordinates
+            x1 = x * cos_y + z * sin_y
+            z1 = -x * sin_y + z * cos_y
+            y1 = y * cos_x - z1 * sin_x
+            
             sx = cx + x1 * self.zoom
             sy = cy - y1 * self.zoom
-            sz = z2
             
             # Display radius with depth scaling
-            display_r = radius * self.zoom * self.sphere_scale
+            if getattr(sphere, 'label', '') in ['COM', 'Centroid']:
+                display_r = radius * self.zoom * self.sphere_scale
+            else:
+                display_r = radius * self.zoom
             depth_factor = 1.0 + sz * 0.02
             display_r *= max(0.5, min(1.5, depth_factor))
             
             # Convert color to RGB
             color_rgb = _hex_to_rgb(color_hex)
             
-            # Draw sphere
-            self._draw_atom_sphere(painter, -1, sx, sy, sz, display_r, color_rgb)
+            # Draw sphere with alpha
+            self._draw_atom_sphere(painter, -1, sx, sy, sz, display_r, color_rgb, alpha=alpha)
             
-            # Draw label if sphere has one
-            if hasattr(sphere, 'label') and sphere.label:
-                painter.setPen(QColor(255, 255, 255))
-                painter.setFont(QFont('Arial', 8))
-                label_rect = QRectF(sx + display_r + 5, sy - 10, 100, 20)
+            # Draw label if sphere has one (only if alpha is high enough to be visible)
+            # Suppress 'Custom' label as requested by user to reduce clutter.
+            is_custom = hasattr(sphere, 'label') and sphere.label.lower() == 'custom'
+            if hasattr(sphere, 'label') and sphere.label and alpha > 0.3 and not is_custom:
+                painter.setPen(QColor(255, 255, 255, int(alpha * 255)))
+                painter.setFont(QFont('Segoe UI', 8))
+                label_rect = QRectF(sx + display_r + 5, sy - 10, 150, 20)
                 painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft, sphere.label)
+

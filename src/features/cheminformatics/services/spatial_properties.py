@@ -15,7 +15,7 @@ def generate_sphere_points(n_points=160):
         points.append([x, y, z])
     return np.array(points, dtype=np.float32)
 
-def compute_sasa(molecule, probe_radius=1.4, n_sphere_points=160):
+def compute_sasa(molecule, probe_radius=1.4, n_sphere_points=5000):
     """
     Compute Shrake-Rupley Solvent Accessible Surface Area (SASA) for each atom.
     Assigns the result to `atom.sasa` and `atom.sasa_points` (for visualization).

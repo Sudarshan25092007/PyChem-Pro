@@ -85,8 +85,8 @@ class AtomColorDialog(QDialog):
         
         # Element color mappings
         elements = [
-            ('Hydrogen', 'atom_h', '#ffffff'),
-            ('Carbon', 'atom_c', '#909090'),
+            ('Hydrogen', 'atom_h', '#d0d0d0'),
+            ('Carbon', 'atom_c', '#55ff7f'),
             ('Nitrogen', 'atom_n', '#3050f8'),
             ('Oxygen', 'atom_o', '#ff0d0d'),
             ('Fluorine', 'atom_f', '#90e050'),
@@ -294,7 +294,7 @@ class AtomColorDialog(QDialog):
     def _reset_to_default(self):
         """Reset all colors to default values."""
         default_colors = {
-            'atom_h': '#ffffff', 'atom_c': '#909090', 'atom_n': '#3050f8',
+            'atom_h': '#d0d0d0', 'atom_c': '#55ff7f', 'atom_n': '#3050f8',
             'atom_o': '#ff0d0d', 'atom_f': '#90e050', 'atom_p': '#ff8000',
             'atom_s': '#ffff30', 'atom_cl': '#1ff01f', 'atom_br': '#a62929',
             'atom_i': '#940094', 'atom_selected': '#ff00ff', 

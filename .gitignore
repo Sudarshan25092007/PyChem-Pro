@@ -1,0 +1,10 @@
+docs/
+testing/
+
+Prompts.txt
+run_app.bat
+
+*.mol2
+*.pdb
+*.pyc
+__pycache__

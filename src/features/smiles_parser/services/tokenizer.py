@@ -10,6 +10,9 @@ Supports full OpenSMILES specification:
 - Dot disconnection: .
 """
 
+import re
+from src.core.domain.models.bond import BondType, BondStereo, BOND_ORDER_MAP
+
 
 class TokenType:
     """Token type constants."""
@@ -305,3 +308,102 @@ def _parse_bracket_atom(content, bracket_pos):
             data['atom_class'] = int(cls_str)
 
     return data
+
+
+# =============================================================================
+# BKChem-Inspired Regex Tokenization
+# =============================================================================
+
+def tokenize_regex(smiles: str) -> list[Token]:
+    """
+    Tokenize SMILES using BKChem-style regex-based chunking.
+    
+    This approach uses regex patterns similar to BKChem's implementation
+    for more robust parsing of complex SMILES strings.
+    
+    Args:
+        smiles: Input SMILES string
+        
+    Returns:
+        List of Token objects
+    """
+    tokens = []
+    
+    # BKChem-style regex pattern for tokenization
+    # Pattern breakdown:
+    #   (\[.*?\])       - Bracket atoms like [C@@H], [NH4+]
+    #   [A-Z][a-z]?     - Two-letter elements (Cl, Br, etc.)
+    #   %[0-9]{1,2}     - Two-digit ring closures like %12
+    #   [^A-Z]          - Single non-uppercase characters
+    #   [a-z]           - Aromatic atoms (c, n, o, etc.)
+    pattern = r'(\[.*?\]|[A-Z][a-z]?|%[0-9]{1,2}|[^A-Z]|[a-z])'
+    
+    # Split and filter out empty strings
+    chunks = [c for c in re.split(pattern, smiles) if c]
+    
+    i = 0
+    while i < len(chunks):
+        chunk = chunks[i]
+        
+        # Skip whitespace
+        if chunk.strip() == '':
+            i += 1
+            continue
+        
+        # Bracket atom
+        if chunk.startswith('['):
+            try:
+                atom_data = _parse_bracket_atom(chunk[1:-1], i)
+                tokens.append(Token(TokenType.BRACKET_ATOM, chunk, atom_data))
+            except SMILESTokenizerError as e:
+                raise SMILESTokenizerError(f"Invalid bracket atom: {chunk}", i) from e
+        
+        # Aromatic atoms (lowercase, single char)
+        elif len(chunk) == 1 and chunk in 'bcnops':
+            tokens.append(Token(TokenType.ATOM, chunk, {
+                'symbol': chunk.upper(),
+                'aromatic': True
+            }))
+        
+        # Organic subset atoms (uppercase)
+        elif chunk in ORGANIC_SUBSET or chunk in TWO_LETTER_ELEMENTS:
+            tokens.append(Token(TokenType.ATOM, chunk, {
+                'symbol': chunk,
+                'aromatic': False
+            }))
+        
+        # Bonds
+        elif chunk in '-=#:':
+            tokens.append(Token(TokenType.BOND, chunk, {'order': BOND_ORDER_MAP[chunk]}))
+        
+        # Stereochemistry bonds
+        elif chunk in '/\\':
+            tokens.append(Token(TokenType.BOND, chunk, {'order': 1, 'stereo': chunk}))
+        
+        # Ring closures (single digit)
+        elif chunk.isdigit() and 0 <= int(chunk) <= 9:
+            tokens.append(Token(TokenType.RING_CLOSURE, chunk, {'number': int(chunk)}))
+        
+        # Ring closures (two-digit %nn)
+        elif chunk.startswith('%'):
+            ring_num = int(chunk[1:])
+            tokens.append(Token(TokenType.RING_CLOSURE, chunk, {'number': ring_num}))
+        
+        # Branch open
+        elif chunk == '(':
+            tokens.append(Token(TokenType.BRANCH_OPEN, chunk, None))
+        
+        # Branch close
+        elif chunk == ')':
+            tokens.append(Token(TokenType.BRANCH_CLOSE, chunk, None))
+        
+        # Dot disconnection
+        elif chunk == '.':
+            tokens.append(Token(TokenType.DOT, chunk, None))
+        
+        else:
+            raise SMILESTokenizerError(f"Unrecognized token: '{chunk}'", i)
+        
+        i += 1
+    
+    return tokens
