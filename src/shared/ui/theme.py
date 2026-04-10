@@ -36,8 +36,8 @@ COLORS = {
     
     # Atom colors for molecular visualization
     'atom_default':    '#808080',      # Gray for unknown atoms
-    'atom_h':          '#ffffff',      # White for hydrogen
-    'atom_c':          '#909090',      # Gray for carbon
+    'atom_h':          '#d0d0d0',      # White for hydrogen
+    'atom_c':          '#55ff7f',      # Gray for carbon
     'atom_n':          '#3050f8',      # Blue for nitrogen
     'atom_o':          '#ff0d0d',      # Red for oxygen
     'atom_f':          '#90e050',      # Light green for fluorine
@@ -50,6 +50,13 @@ COLORS = {
     'atom_highlight':   '#ffff00',      # Yellow for highlighted atoms
     'atom_positive':    '#0000ff',      # Blue for positive charges
     'atom_negative':    '#ff0000',      # Red for negative charges
+    
+    # Protein secondary structure colors for cartoon/ribbon rendering
+    'ss_helix':         '#dc3232',      # Helix - red (PyMOL style)
+    'ss_sheet':         '#3296dc',      # Sheet - blue (PyMOL style)
+    'ss_coil':          '#b4b4b4',      # Coil/loop - gray
+    'ss_turn':          '#00d4aa',      # Turn - teal
+    'ss_default':       '#808080',      # Default/unknown - gray
 }
 
 

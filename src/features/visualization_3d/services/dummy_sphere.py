@@ -18,7 +18,8 @@ class DummySphere:
     
     def __init__(self, position: Tuple[float, float, float], 
                  radius: float = 0.5, color: str = '#ffff00', 
-                 label: str = "Dummy", sphere_id: str = None):
+                 label: str = "Dummy", sphere_id: str = None,
+                 alpha: float = 1.0):
         """
         Initialize a dummy sphere.
         
@@ -28,12 +29,14 @@ class DummySphere:
             color: Hex color string
             label: Display label for the sphere
             sphere_id: Unique identifier for the sphere
+            alpha: Transparency (0.0 to 1.0, where 1.0 is opaque)
         """
         self.position = np.array(position)
         self.radius = radius
         self.color = color
         self.label = label
         self.sphere_id = sphere_id or f"sphere_{id(self)}"
+        self.alpha = alpha
         self.visible = True
         
     def get_position(self) -> Tuple[float, float, float]:
@@ -57,13 +60,16 @@ class DummySphereManager:
     
     def __init__(self, molecule: Molecule):
         self.molecule = molecule
-        self.spheres: List[DummySphere] = []
-        self.next_id = 1
+        if not hasattr(molecule, 'dummy_spheres'):
+            molecule.dummy_spheres = []
+        self.spheres = molecule.dummy_spheres
+        self.next_id = len(self.spheres) + 1
         
     def create_sphere_at_position(self, position: Tuple[float, float, float], 
                               radius: float = 0.5, 
                               color: str = '#ffff00',
-                              label: str = "Dummy") -> str:
+                              label: str = "Dummy",
+                              alpha: float = 1.0) -> str:
         """
         Create a dummy sphere at specified position.
         
@@ -72,12 +78,13 @@ class DummySphereManager:
             radius: Sphere radius
             color: Hex color string
             label: Display label
+            alpha: Transparency (0.0 to 1.0)
             
         Returns:
             Sphere ID
         """
         sphere_id = f"dummy_{self.next_id}"
-        sphere = DummySphere(position, radius, color, label, sphere_id)
+        sphere = DummySphere(position, radius, color, label, sphere_id, alpha=alpha)
         self.spheres.append(sphere)
         self.next_id += 1
         
@@ -85,7 +92,8 @@ class DummySphereManager:
     
     def create_sphere_at_com(self, radius: float = 0.5, 
                           color: str = '#ff00ff',
-                          label: str = "COM") -> str:
+                          label: str = "COM",
+                          alpha: float = 1.0) -> str:
         """
         Create a dummy sphere at the center of mass.
         
@@ -93,12 +101,13 @@ class DummySphereManager:
             radius: Sphere radius
             color: Hex color string
             label: Display label
+            alpha: Transparency (0.0 to 1.0)
             
         Returns:
             Sphere ID
         """
         com = self.calculate_center_of_mass()
-        return self.create_sphere_at_position(com, radius, color, label)
+        return self.create_sphere_at_position(com, radius, color, label, alpha=alpha)
     
     def create_sphere_at_centroid(self, radius: float = 0.5,
                               color: str = '#00ff00',
@@ -138,19 +147,24 @@ class DummySphereManager:
     
     def calculate_center_of_mass(self) -> Tuple[float, float, float]:
         """
-        Calculate the center of mass of the molecule.
+        Calculate the center of mass of the molecule, including H-atoms.
         
         Returns:
             (x, y, z) coordinates of COM
         """
-        if not self.molecule.atoms:
+        if not self.molecule or not self.molecule.atoms:
             return (0.0, 0.0, 0.0)
         
         total_mass = 0.0
         weighted_sum = np.zeros(3)
         
         for atom in self.molecule.atoms:
-            mass = self._get_atomic_mass(atom.symbol)
+            if not atom.has_coords:
+                continue
+                
+            # Inclusion of H-atoms is explicitly requested. 
+            # Atom.mass returns the isotope mass or standard element mass.
+            mass = atom.mass
             position = np.array([atom.x, atom.y, atom.z])
             
             weighted_sum += mass * position
@@ -165,18 +179,23 @@ class DummySphereManager:
     
     def calculate_geometric_centroid(self) -> Tuple[float, float, float]:
         """
-        Calculate the geometric centroid of all atoms.
+        Calculate the geometric centroid of all atoms (including H-atoms).
         
         Returns:
             (x, y, z) coordinates of centroid
         """
-        if not self.molecule.atoms:
+        if not self.molecule or not self.molecule.atoms:
             return (0.0, 0.0, 0.0)
         
         positions = []
         for atom in self.molecule.atoms:
+            if not atom.has_coords:
+                continue
             positions.append([atom.x, atom.y, atom.z])
         
+        if not positions:
+            return (0.0, 0.0, 0.0)
+            
         positions_array = np.array(positions)
         centroid = np.mean(positions_array, axis=0)
         
@@ -335,7 +354,8 @@ class DummySphereManager:
                     'radius': sphere.radius,
                     'color': sphere.color,
                     'label': sphere.label,
-                    'visible': sphere.visible
+                    'visible': sphere.visible,
+                    'alpha': sphere.alpha
                 }
                 for sphere in self.spheres
             ]

@@ -22,7 +22,7 @@ class QuickColorPicker:
         
         # Scheme 1: Default
         default = {
-            'atom_c': '#909090', 'atom_h': '#ffffff', 'atom_o': '#ff0d0d', 'atom_n': '#3050f8',
+            'atom_c': '#55ff7f', 'atom_h': '#d0d0d0', 'atom_o': '#ff0d0d', 'atom_n': '#3050f8',
             'sphere_default': '#ff00ff', 'sphere_com': '#ff00ff', 'sphere_centroid': '#00ff00', 'sphere_custom': '#ffff00',
             'stick_default': '#808080'
         }

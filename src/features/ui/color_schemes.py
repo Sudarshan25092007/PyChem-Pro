@@ -34,8 +34,8 @@ class ColorSchemeManager:
         
         # 1. Default Scheme
         default_colors = {
-            'atom_h': '#ffffff',      # White
-            'atom_c': '#909090',      # Gray
+            'atom_h': '#d0d0d0',      # White
+            'atom_c': '#55ff7f',      # Gray
             'atom_n': '#3050f8',      # Blue
             'atom_o': '#ff0d0d',      # Red
             'atom_f': '#90e050',      # Light green

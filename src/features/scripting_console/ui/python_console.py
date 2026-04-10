@@ -8,9 +8,7 @@ The current molecule is available as `mol` in the console namespace.
 import sys
 import io
 import traceback
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QHBoxLayout
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QTextCursor
+from src.shared.qt_compat import QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QHBoxLayout, Qt, Signal, QFont, QColor, QTextCursor
 from src.shared.ui.theme import COLORS
 
 
@@ -26,7 +24,6 @@ class PythonConsole(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMaximumHeight(200)
         self.setMinimumHeight(80)
 
         self._namespace = {}
@@ -464,9 +461,15 @@ class PythonConsole(QWidget):
             rn = term[8:].strip().upper()
             return set(a.index for a in mol.atoms if getattr(a, 'res_name', '') == rn)
             
-        if term.startswith('resid ') or term.startswith('resi '):
+        if term.startswith('resid ') or term.startswith('resi ') or term.startswith('resnum '):
             rn = term.split()[1].strip()
             return set(a.index for a in mol.atoms if str(getattr(a, 'res_seq', '')) == rn)
+
+        if term in ('organic', 'ligand', 'ligands'):
+            return set(a.index for a in mol.atoms if getattr(a, 'is_hetatm', False) and getattr(a, 'res_name', '').upper() not in ('HOH', 'WAT', 'SOL', 'DOD'))
+
+        if term in ('solvent', 'water', 'sol', 'wat', 'hoh'):
+            return set(a.index for a in mol.atoms if getattr(a, 'res_name', '').upper() in ('HOH', 'WAT', 'SOL', 'DOD'))
 
         # Element symbol — case-insensitive matching
         # Try exact match first, then capitalize
@@ -613,8 +616,8 @@ class PythonConsole(QWidget):
             self._append_text(f"Error: {e}", COLORS['error'])
             return 0.0
 
-    def _set_sasa_density(self, density=160):
-        """set_sasa_density(500) — recompute SASA with higher point density."""
+    def _set_sasa_density(self, density=1600):
+        """set_sasa_density(1600) — recompute SASA with higher point density."""
         mol = self._namespace.get('mol')
         if not mol: return
         try:
@@ -748,7 +751,10 @@ class PythonConsole(QWidget):
             "  sele('halogen')        F, Cl, Br, I\n"
             "  sele('heteroatom')     Non-C, Non-H atoms\n"
             "  sele('chain A')        PDB chain A\n"
-            "  sele('resname ALA')    PDB residue mapping\n"
+            "  sele('resname ALA')    PDB residue name\n"
+            "  sele('resnum 10')      PDB residue number\n"
+            "  sele('organic')        Ligands (non-water hetatms)\n"
+            "  sele('solvent')        Water molecules (HOH/WAT)\n"
             "  s('N or O or S')       s() = short for sele()\n"
             "  clear()                Clear selection\n"
             "  selected()             Get selected indices\n"

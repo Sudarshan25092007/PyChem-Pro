@@ -22,6 +22,7 @@ class Molecule:
         self._adjacency = {}     # atom_idx -> list of (neighbor_idx, bond_idx)
         self._rings = None       # cached SSSR
         self.properties = {}     # arbitrary key-value properties
+        self._suppress_ring_invalidation = False  # bulk-load flag
 
     # ─── Graph Building ─────────────────────────────────────────────
 
@@ -30,7 +31,8 @@ class Molecule:
         atom.index = len(self.atoms)
         self.atoms.append(atom)
         self._adjacency[atom.index] = []
-        self._rings = None  # invalidate ring cache
+        if not self._suppress_ring_invalidation:
+            self._rings = None
         return atom.index
 
     def add_bond(self, begin_idx, end_idx, bond_type=BondType.SINGLE, stereo=0):
@@ -46,8 +48,112 @@ class Molecule:
         self.bonds.append(bond)
         self._adjacency[begin_idx].append((end_idx, bond.index))
         self._adjacency[end_idx].append((begin_idx, bond.index))
-        self._rings = None
+        if not self._suppress_ring_invalidation:
+            self._rings = None
         return bond.index
+
+    def begin_bulk_load(self):
+        """Suppress ring-cache invalidation during bulk atom/bond insertion."""
+        self._suppress_ring_invalidation = True
+
+    def end_bulk_load(self):
+        """Re-enable ring-cache invalidation and clear cached rings."""
+        self._suppress_ring_invalidation = False
+        self._rings = None
+
+    # ─── Graph Editing (Remove) ─────────────────────────────────────
+
+    def remove_atoms(self, indices_to_remove):
+        """
+        Remove a set of atoms (and all bonds touching them) from the molecule.
+
+        After removal, the remaining atoms and bonds are re-indexed so that
+        ``self.atoms[i].index == i`` and ``self.bonds[j].index == j`` hold
+        for every surviving element.  The adjacency map is rebuilt from
+        scratch.
+
+        Args:
+            indices_to_remove: Iterable of atom indices to delete.
+
+        Returns:
+            int: Number of atoms actually removed.
+        """
+        remove_set = set(indices_to_remove)
+        if not remove_set:
+            return 0
+
+        # --- 1. Identify surviving atoms and build old→new index map ---
+        old_to_new = {}          # old_atom_idx → new_atom_idx
+        new_atoms = []
+        for old_idx, atom in enumerate(self.atoms):
+            if old_idx not in remove_set:
+                new_idx = len(new_atoms)
+                old_to_new[old_idx] = new_idx
+                atom.index = new_idx
+                new_atoms.append(atom)
+
+        # --- 2. Keep only bonds whose *both* endpoints survive ---
+        new_bonds = []
+        for bond in self.bonds:
+            if bond.begin_atom_idx in remove_set or bond.end_atom_idx in remove_set:
+                continue  # discard — touches a deleted atom
+            bond.begin_atom_idx = old_to_new[bond.begin_atom_idx]
+            bond.end_atom_idx = old_to_new[bond.end_atom_idx]
+            bond.index = len(new_bonds)
+            new_bonds.append(bond)
+
+        # --- 3. Rebuild adjacency map ---
+        new_adjacency = {i: [] for i in range(len(new_atoms))}
+        for bond in new_bonds:
+            new_adjacency[bond.begin_atom_idx].append(
+                (bond.end_atom_idx, bond.index))
+            new_adjacency[bond.end_atom_idx].append(
+                (bond.begin_atom_idx, bond.index))
+
+        # --- 4. Commit ---
+        removed_count = len(self.atoms) - len(new_atoms)
+        self.atoms = new_atoms
+        self.bonds = new_bonds
+        self._adjacency = new_adjacency
+        self._rings = None  # invalidate ring cache
+        return removed_count
+
+    def remove_bonds(self, bond_indices_to_remove):
+        """
+        Remove a set of bonds from the molecule without removing any atoms.
+
+        Surviving bonds are re-indexed and the adjacency map is rebuilt.
+
+        Args:
+            bond_indices_to_remove: Iterable of bond indices to delete.
+
+        Returns:
+            int: Number of bonds actually removed.
+        """
+        remove_set = set(bond_indices_to_remove)
+        if not remove_set:
+            return 0
+
+        new_bonds = []
+        for bond in self.bonds:
+            if bond.index in remove_set:
+                continue
+            bond.index = len(new_bonds)
+            new_bonds.append(bond)
+
+        # Rebuild adjacency
+        new_adjacency = {i: [] for i in range(len(self.atoms))}
+        for bond in new_bonds:
+            new_adjacency[bond.begin_atom_idx].append(
+                (bond.end_atom_idx, bond.index))
+            new_adjacency[bond.end_atom_idx].append(
+                (bond.begin_atom_idx, bond.index))
+
+        removed_count = len(self.bonds) - len(new_bonds)
+        self.bonds = new_bonds
+        self._adjacency = new_adjacency
+        self._rings = None
+        return removed_count
 
     # ─── Graph Queries ──────────────────────────────────────────────
 

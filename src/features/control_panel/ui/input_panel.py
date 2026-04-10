@@ -2,14 +2,12 @@
 Input Panel — SMILES input, conversion controls, and molecule info display.
 """
 
-from PySide6.QtWidgets import (
+from src.shared.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QTextEdit,
     QComboBox, QCheckBox, QFrame, QSizePolicy, QSpinBox,
-    QScrollArea, QSlider
+    QScrollArea, QSlider, Qt, Signal, QFont
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 from src.shared.ui.theme import COLORS
 
 
@@ -21,7 +19,7 @@ class InputPanel(QWidget):
     convert_requested = Signal(str)
     export_sdf_requested = Signal()
     export_mol2_requested = Signal()
-    export_image_requested = Signal(int, bool)  # (dpi, white_bg)
+    export_image_requested = Signal(int, bool)  # (dpi, white_bg) — white_bg always True now
     sphere_scale_changed = Signal(float)
     stick_scale_changed = Signal(float)
     line_scale_changed = Signal(float)
@@ -128,7 +126,7 @@ class InputPanel(QWidget):
         """
 
         self.show_h_check = QCheckBox("Show Hydrogens")
-        self.show_h_check.setChecked(True)
+        self.show_h_check.setChecked(False)  # BKChem-style: hide H by default
         self.show_h_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_h_check)
 
@@ -138,7 +136,7 @@ class InputPanel(QWidget):
         view_layout.addWidget(self.show_labels_check)
 
         self.show_sidechains_check = QCheckBox("Show Side Chains")
-        self.show_sidechains_check.setChecked(True)
+        self.show_sidechains_check.setChecked(False)
         self.show_sidechains_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_sidechains_check)
 
@@ -268,10 +266,8 @@ class InputPanel(QWidget):
         dpi_row.addStretch()
         export_layout.addLayout(dpi_row)
 
-        self.white_bg_check = QCheckBox("White background")
-        self.white_bg_check.setChecked(False)
-        self.white_bg_check.setStyleSheet(checkbox_style)
-        export_layout.addWidget(self.white_bg_check)
+        # White background checkbox removed — exports always use white bg
+        # for publication quality (standard in ChemDraw, PyMOL, etc.)
 
         self.export_img_btn = QPushButton("Export Image")
         self.export_img_btn.setObjectName("btnSecondary")
@@ -307,7 +303,7 @@ class InputPanel(QWidget):
         layout.addStretch()
 
         # ── Footer ──
-        footer = QLabel("SMILES-to-3D v1.0")
+        footer = QLabel("PyChem molecular viewer v1.0")
         footer.setObjectName("labelMuted")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(footer)
@@ -357,8 +353,7 @@ class InputPanel(QWidget):
 
     def _on_export_image(self):
         dpi = self.dpi_spin.value()
-        white_bg = self.white_bg_check.isChecked()
-        self.export_image_requested.emit(dpi, white_bg)
+        self.export_image_requested.emit(dpi, True)  # Always white background
 
     def _make_slider(self, parent_layout, label_text, min_val, max_val, default, style, callback):
         """Create a labeled slider row. Returns (slider, value_label)."""

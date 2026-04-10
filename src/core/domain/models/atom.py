@@ -43,7 +43,7 @@ class Atom:
     __slots__ = (
         'index', 'element', 'formal_charge', 'isotope', 'chirality',
         'num_implicit_h', 'num_explicit_h', 'is_aromatic',
-        'x', 'y', 'z', 'partial_charge', 'atom_class',
+        'x', 'y', 'z', 'x2d', 'y2d', 'z2d', 'partial_charge', 'atom_class',
         'ring_bonds', '_in_bracket', 'radical_electrons',
         'hybridization', 'sybyl_type', 'pdb_name', 'res_name',
         'chain_id', 'res_seq', 'b_factor', 'is_hetatm', 'ss_type',
@@ -73,6 +73,11 @@ class Atom:
         self.x = None
         self.y = None
         self.z = None
+        
+        # 2D geometry coordinates
+        self.x2d = None
+        self.y2d = None
+        self.z2d = None
 
         # Computed properties
         self.partial_charge = 0.0
@@ -106,7 +111,9 @@ class Atom:
 
     @property
     def mass(self):
-        return self.isotope if self.isotope > 0 else self.element.mass
+        """Atomic mass (isotope if specified, or standard weight)."""
+        iso = self.isotope if self.isotope is not None else 0
+        return iso if iso > 0 else self.element.mass
 
     @property
     def total_h(self):
