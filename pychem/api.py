@@ -25,10 +25,22 @@ def generate_3d(mol, optimize: bool = True, max_steps: int = 200) -> None:
 
 def optimize(mol, max_iters: int = 500, convergence: float = 1e-4, method: str = 'lbfgs'):
     """Optimize molecular geometry using MMFF94. Returns OptimizationResult."""
-    from src.features.cheminformatics.services.mmff94 import mmff94_optimize_geometry
-    mmff94_optimize_geometry(mol, max_iters=max_iters)
-    from src.core.protocols.forcefield import OptimizationResult
-    return OptimizationResult(converged=True, final_energy=0.0, num_steps=0)
+    from pychem._bridge import get_registry
+    return get_registry().forcefield.optimize_geometry(
+        mol, max_iters=max_iters, convergence=convergence, method=method
+    )
+
+
+def compute_charges(mol) -> None:
+    """Assign MMFF94 partial charges (BCI method) in-place on the molecule."""
+    from pychem._bridge import get_registry
+    get_registry().forcefield.assign_charges(mol)
+
+
+def add_hydrogens(mol) -> int:
+    """Add explicit hydrogens with 3D positions. Returns count added."""
+    from pychem._bridge import get_registry
+    return get_registry().forcefield.add_hydrogens(mol)
 
 
 def descriptors(mol, names=None) -> dict:

@@ -6,6 +6,7 @@ Created once at startup, passed to consumers via constructor.
 """
 from src.core.parallel import ParallelExecutor
 from src.core.events import EventBus
+from src.services.forcefield.mmff94_service import MMFF94Service
 
 
 class ServiceRegistry:
@@ -16,16 +17,13 @@ class ServiceRegistry:
         registry = ServiceRegistry()
         mol = registry.loader.load("protein.pdb")
         registry.forcefield.optimize_geometry(mol)
-
-    Services are added incrementally as they are implemented.
-    Initially only executor and event_bus are available.
     """
 
     def __init__(self):
         self.executor = ParallelExecutor()
         self.event_bus = EventBus()
+        self.forcefield = MMFF94Service(self.executor)
         # Services added in later phases:
-        # self.forcefield = MMFF94Service(self.executor)
         # self.loader = LoaderService(self.executor)
         # self.coord_gen = CoordinateGeneratorService(self.executor)
         # self.descriptors = DescriptorService(self.executor)
