@@ -1,9 +1,19 @@
 """
 Centralized multiprocessing executor for PyChem.
 Uses 50% of available CPU cores by default.
+
+Cross-platform: forces 'spawn' start method on all platforms to avoid:
+- macOS: fork + Qt = crash (CoreFoundation assertion)
+- Windows: fork not available (spawn is the only option)
+- Linux: fork works but spawn is safer with Qt
 """
 import os
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# Force spawn on all platforms for Qt safety
+_mp_context = mp.get_context('spawn')
+
 
 class ParallelExecutor:
     def __init__(self, core_fraction: float = 0.5, max_workers: int = None):
@@ -21,7 +31,10 @@ class ParallelExecutor:
     @property
     def pool(self) -> ProcessPoolExecutor:
         if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=self.num_workers)
+            self._pool = ProcessPoolExecutor(
+                max_workers=self.num_workers,
+                mp_context=_mp_context
+            )
         return self._pool
 
     def map(self, fn, chunks, timeout=60):
