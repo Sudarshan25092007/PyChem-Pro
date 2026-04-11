@@ -22,6 +22,36 @@ from src.services.forcefield.parameters import (
 )
 
 
+# ─── Module-level worker functions (picklable for spawn mode) ─────
+
+def _vdw_energy_chunk(args):
+    """Compute VdW energy for a chunk of pairs."""
+    coords, pairs_chunk = args
+    energy = 0.0
+    for i, j, sigma, epsilon in pairs_chunk:
+        r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
+        if r < sigma * 1.5:
+            ratio = sigma / r
+            energy += epsilon * (ratio ** 12 - 2.0 * ratio ** 6)
+    return energy
+
+
+def _vdw_gradient_chunk(args):
+    """Compute VdW gradient for a chunk of pairs."""
+    coords, pairs_chunk, n_atoms = args
+    grad = np.zeros((n_atoms, 3))
+    for i, j, sigma, epsilon in pairs_chunk:
+        diff = coords[i] - coords[j]
+        r = np.linalg.norm(diff) + 1e-8
+        if r < sigma * 1.5:
+            ratio = sigma / r
+            force_mag = epsilon * (-12.0 * ratio**12 / r + 12.0 * ratio**6 / r)
+            direction = diff / r
+            grad[i] += force_mag * direction
+            grad[j] -= force_mag * direction
+    return grad
+
+
 class MMFF94Service:
     """
     Complete MMFF94 force field service.
@@ -132,7 +162,7 @@ class MMFF94Service:
             energy += 71.94 / 2.0 * kb * (r - r0) ** 2
         return energy
 
-    def _vdw_energy(self, coords, vdw_pairs):
+    def _vdw_energy_sequential(self, coords, vdw_pairs):
         energy = 0.0
         for i, j, sigma, epsilon in vdw_pairs:
             r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
@@ -140,6 +170,16 @@ class MMFF94Service:
                 ratio = sigma / r
                 energy += epsilon * (ratio ** 12 - 2.0 * ratio ** 6)
         return energy
+
+    def _vdw_energy(self, coords, vdw_pairs):
+        if len(vdw_pairs) < 200 or self.executor is None:
+            return self._vdw_energy_sequential(coords, vdw_pairs)
+        # Split pairs into chunks for parallel execution
+        chunk_size = max(50, len(vdw_pairs) // self.executor.num_workers)
+        chunks = [(coords, vdw_pairs[i:i + chunk_size])
+                  for i in range(0, len(vdw_pairs), chunk_size)]
+        results = self.executor.map(_vdw_energy_chunk, chunks)
+        return sum(results)
 
     # ─── Gradient Functions ────────────────────────────────────
 
@@ -161,7 +201,7 @@ class MMFF94Service:
             grad[j] -= force * diff / r
         return grad
 
-    def _vdw_gradient(self, coords, vdw_pairs):
+    def _vdw_gradient_sequential(self, coords, vdw_pairs):
         grad = np.zeros_like(coords)
         for i, j, sigma, epsilon in vdw_pairs:
             diff = coords[i] - coords[j]
@@ -172,6 +212,21 @@ class MMFF94Service:
                 direction = diff / r
                 grad[i] += force_mag * direction
                 grad[j] -= force_mag * direction
+        return grad
+
+    def _vdw_gradient(self, coords, vdw_pairs):
+        if len(vdw_pairs) < 200 or self.executor is None:
+            return self._vdw_gradient_sequential(coords, vdw_pairs)
+        # Split pairs into chunks for parallel execution
+        n_atoms = coords.shape[0]
+        chunk_size = max(50, len(vdw_pairs) // self.executor.num_workers)
+        chunks = [(coords, vdw_pairs[i:i + chunk_size], n_atoms)
+                  for i in range(0, len(vdw_pairs), chunk_size)]
+        results = self.executor.map(_vdw_gradient_chunk, chunks)
+        # Sum partial gradients from all chunks
+        grad = np.zeros_like(coords)
+        for partial_grad in results:
+            grad += partial_grad
         return grad
 
     # ─── Interaction List Builders ─────────────────────────────
