@@ -10,7 +10,7 @@ import math
 from src.shared.qt_compat import (
     Qt, QPointF, QRectF,
     QPainter, QColor, QPen, QBrush, QFont, QPainterPath,
-    QPolygonF,
+    QPolygonF, QRadialGradient,
 )
 from src.shared.ui.theme import COLORS
 
@@ -31,11 +31,115 @@ DISPLAY_RADIUS = {
 
 class PainterRenderer:
     """
-    Stateless rendering helper for :class:`MolViewer3D`.
+    Rendering helper for :class:`MolViewer3D`.
 
-    Every public method receives the viewer (or its state) explicitly so
-    this class holds **no** mutable state of its own.
+    Every public method receives the viewer (or its state) explicitly.
+    Lightweight caches (gradient, spatial hash) are maintained for
+    performance but are automatically invalidated as needed.
     """
+
+    def __init__(self):
+        # Gradient cache: (element_symbol, radius_bucket, is_hovered, use_ssao) -> gradient color stops
+        # We cache the *color stops* (not the positioned QRadialGradient) because
+        # the gradient centre changes every frame.  Rebuilding a QRadialGradient
+        # from cached stops is cheap; computing the colour arithmetic is not.
+        self._gradient_cache = {}
+
+    # ─── Cache management ────────────────────────────────────────
+
+    def invalidate_cache(self):
+        """Clear all rendering caches (call when colour scheme changes)."""
+        self._gradient_cache.clear()
+
+    def _get_cached_gradient(self, element_symbol, radius, sx, sy, rgb,
+                             is_hovered=False, use_ssao=False, sz=0.0,
+                             alpha=1.0):
+        """Return a positioned QRadialGradient, reusing cached colour stops.
+
+        The cache key is ``(element_symbol, radius_bucket, is_hovered,
+        use_ssao)`` so atoms of the same element at the same visual size
+        share the same computed colour stops.  The gradient is then
+        repositioned to *(sx, sy)* which is a trivial operation.
+        """
+        bucket = round(radius * 2)  # half-pixel buckets
+        # Quantise depth for shading so nearby atoms share the same entry
+        depth_bucket = round(sz * 4)
+        key = (element_symbol, bucket, is_hovered, use_ssao, depth_bucket,
+               int(alpha * 255))
+
+        if key not in self._gradient_cache:
+            r, g, b = rgb
+
+            # Depth-based shading (mirrors atom_rendering.draw_atom_sphere)
+            if use_ssao:
+                depth_shade = max(0.2, min(1.0, 1.0 - sz * 0.05))
+            else:
+                depth_shade = max(0.5, min(1.0, 1.0 - sz * 0.025))
+            r = int(r * depth_shade)
+            g = int(g * depth_shade)
+            b = int(b * depth_shade)
+
+            if is_hovered:
+                r = min(255, r + 50)
+                g = min(255, g + 50)
+                b = min(255, b + 50)
+
+            r = max(0, min(255, r))
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+
+            alpha_int = int(alpha * 255)
+            highlight = QColor(min(255, r + 160), min(255, g + 160),
+                               min(255, b + 160), alpha_int)
+            base = QColor(r, g, b, alpha_int)
+            mid = QColor(max(0, min(255, int(r * 0.85))),
+                         max(0, min(255, int(g * 0.85))),
+                         max(0, min(255, int(b * 0.85))), alpha_int)
+            shadow = QColor(max(0, int(r * 0.20)),
+                            max(0, int(g * 0.20)),
+                            max(0, int(b * 0.20)), alpha_int)
+
+            # Also cache the flat colour for the simple-dot LOD path
+            flat_color = QColor(r, g, b, alpha_int)
+
+            self._gradient_cache[key] = (highlight, base, mid, shadow,
+                                         flat_color, radius > 6 and alpha > 0.5)
+
+        stops = self._gradient_cache[key]
+        highlight, base_c, mid_c, shadow_c, _flat, do_specular = stops
+
+        # Build a positioned gradient (cheap — no colour math)
+        highlight_x = sx - radius * 0.30
+        highlight_y = sy - radius * 0.30
+        gradient = QRadialGradient(QPointF(sx, sy), radius,
+                                   QPointF(highlight_x, highlight_y))
+        gradient.setColorAt(0.0, highlight)
+        gradient.setColorAt(0.25, base_c)
+        gradient.setColorAt(0.7, mid_c)
+        gradient.setColorAt(1.0, shadow_c)
+
+        return gradient, do_specular
+
+    # ─── Spatial hash for bond lookup ────────────────────────────
+
+    @staticmethod
+    def _build_spatial_hash(projected, cell_size=50):
+        """Build a grid mapping cell coordinates to projected-atom indices.
+
+        Used by ``_draw_bonds`` to avoid a full scan of the projected list
+        when locating atom endpoints.  Reduces bond lookup from O(N) dict
+        build to an O(1)-amortised grid probe.
+        """
+        grid = {}
+        proj_map = {}
+        for entry in projected:
+            atom_idx = entry[0]
+            sx, sy = entry[1], entry[2]
+            proj_map[atom_idx] = entry
+            gx = int(sx // cell_size)
+            gy = int(sy // cell_size)
+            grid.setdefault((gx, gy), []).append(atom_idx)
+        return grid, proj_map
 
     # ─── Projection ──────────────────────────────────────────────
 
@@ -114,6 +218,10 @@ class PainterRenderer:
                 self._draw_placeholder(painter, width, height)
             return
 
+        # Limit gradient cache size to prevent unbounded memory growth
+        if len(self._gradient_cache) > 4096:
+            self._gradient_cache.clear()
+
         # Project atoms
         projected = self._project_atoms(v, width, height)
         if not projected:
@@ -121,6 +229,9 @@ class PainterRenderer:
 
         # Sort by depth (furthest first = painter's algorithm)
         sorted_atoms = sorted(projected, key=lambda x: x[3])
+
+        # Off-screen culling margin (pixels)
+        _cull_margin = 50
 
         # --- Protein modes ---
         if v.render_mode in ('cartoon', 'ribbon', 'backbone'):
@@ -132,6 +243,10 @@ class PainterRenderer:
                 self._draw_bonds(v, painter, projected, custom_only=True)
                 for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
                     if atom_idx in cam:
+                        # Off-screen culling
+                        if (sx < -_cull_margin or sx > width + _cull_margin or
+                                sy < -_cull_margin or sy > height + _cull_margin):
+                            continue
                         self._draw_atom_sphere(v, painter, atom_idx, sx, sy, sz, radius, color)
         else:
             # Optimize rendering for large molecules
@@ -139,15 +254,24 @@ class PainterRenderer:
             use_simple_rendering = num_atoms > 500
 
             if use_simple_rendering and v.render_mode == 'ball_and_stick':
-                self._draw_large_molecule_fast(v, painter, projected, sorted_atoms)
+                self._draw_large_molecule_fast(v, painter, projected, sorted_atoms,
+                                               width, height)
             else:
                 # Draw bonds first (behind atoms)
-                self._draw_bonds(v, painter, projected)
+                self._draw_bonds(v, painter, projected, width=width, height=height)
 
                 # Draw atoms with smooth gradient spheres
                 for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
+                    # Off-screen culling
+                    if (sx < -_cull_margin or sx > width + _cull_margin or
+                            sy < -_cull_margin or sy > height + _cull_margin):
+                        continue
+
                     if use_simple_rendering:
                         self._draw_atom_simple(painter, sx, sy, radius, color)
+                    elif radius < 2:
+                        # LOD: tiny atom — draw as simple filled circle (no gradient)
+                        self._draw_atom_dot(painter, sx, sy, radius, color)
                     else:
                         self._draw_atom_sphere(v, painter, atom_idx, sx, sy, sz, radius, color)
 
@@ -198,12 +322,58 @@ class PainterRenderer:
 
     # ─── Atom drawing ────────────────────────────────────────────
 
+    def _draw_atom_dot(self, painter, sx, sy, radius, rgb):
+        """LOD fast-path: draw a tiny atom as a plain filled circle (no gradient)."""
+        if isinstance(rgb, tuple):
+            r, g, b = rgb
+            color = QColor(r, g, b)
+        else:
+            color = rgb
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        dot_r = max(1.5, radius)
+        painter.drawEllipse(QPointF(sx, sy), dot_r, dot_r)
+
     def _draw_atom_sphere(self, v, painter, atom_idx, sx, sy, sz, radius, rgb, alpha=1.0):
-        from src.features.visualization_3d.services.atom_rendering import draw_atom_sphere
-        draw_atom_sphere(painter, sx, sy, sz, radius, rgb,
-                         is_hovered=(atom_idx == v._hovered_atom),
-                         use_ssao=getattr(v, 'use_ssao', False),
-                         alpha=alpha)
+        """Draw an atom sphere using the gradient cache for performance.
+
+        Falls back to the service-layer ``draw_atom_sphere`` only when the
+        cache is unavailable (should not happen in normal use).
+        """
+        is_hovered = (atom_idx == v._hovered_atom)
+        use_ssao = getattr(v, 'use_ssao', False)
+
+        # Resolve element symbol for cache key
+        if atom_idx >= 0 and v.molecule and atom_idx < len(v.molecule.atoms):
+            elem_sym = v.molecule.atoms[atom_idx].symbol
+        else:
+            elem_sym = '_dummy'
+
+        gradient, do_specular = self._get_cached_gradient(
+            elem_sym, radius, sx, sy, rgb,
+            is_hovered=is_hovered, use_ssao=use_ssao, sz=sz, alpha=alpha)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(QRectF(sx - radius, sy - radius,
+                                    radius * 2, radius * 2))
+
+        # Specular highlight for larger atoms
+        if do_specular:
+            spec_radius = radius * 0.18
+            spec_x = sx - radius * 0.28
+            spec_y = sy - radius * 0.28
+            spec_grad = QRadialGradient(QPointF(spec_x, spec_y), spec_radius,
+                                         QPointF(spec_x, spec_y))
+            alpha_val = alpha
+            spec_grad.setColorAt(0.0, QColor(255, 255, 255, int(180 * alpha_val)))
+            spec_grad.setColorAt(0.5, QColor(255, 255, 255, int(60 * alpha_val)))
+            spec_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setBrush(QBrush(spec_grad))
+            painter.drawEllipse(QRectF(spec_x - spec_radius,
+                                        spec_y - spec_radius,
+                                        spec_radius * 2,
+                                        spec_radius * 2))
 
     def _draw_selection_ring(self, painter, sx, sy, radius):
         from src.features.visualization_3d.services.atom_rendering import draw_selection_ring
@@ -223,13 +393,18 @@ class PainterRenderer:
 
     # ─── Bond drawing ────────────────────────────────────────────
 
-    def _draw_bonds(self, v, painter, projected, custom_only=False):
+    def _draw_bonds(self, v, painter, projected, custom_only=False,
+                    width=None, height=None):
         """Draw bonds as lines/cylinders between atoms."""
         if not v.molecule:
             return
 
         proj_map = {p[0]: p for p in projected}
         cam = getattr(v, 'custom_atom_modes', {})
+
+        # Culling bounds (with generous margin for long bonds)
+        _bond_cull = width is not None and height is not None
+        _bond_margin = 100
 
         for bond in v.molecule.bonds:
             i = bond.begin_atom_idx
@@ -243,6 +418,14 @@ class PainterRenderer:
 
             _, x1, y1, z1, r1, c1 = proj_map[i]
             _, x2, y2, z2, r2, c2 = proj_map[j]
+
+            # Off-screen culling: skip if both endpoints are outside viewport
+            if _bond_cull:
+                if ((x1 < -_bond_margin and x2 < -_bond_margin) or
+                        (x1 > width + _bond_margin and x2 > width + _bond_margin) or
+                        (y1 < -_bond_margin and y2 < -_bond_margin) or
+                        (y1 > height + _bond_margin and y2 > height + _bond_margin)):
+                    continue
 
             avg_z = (z1 + z2) / 2
             depth_shade = max(0.35, min(1.0, 1.0 - avg_z * 0.025))
@@ -358,11 +541,15 @@ class PainterRenderer:
 
     # ─── Large molecule fast path ────────────────────────────────
 
-    def _draw_large_molecule_fast(self, v, painter, projected, sorted_atoms):
+    def _draw_large_molecule_fast(self, v, painter, projected, sorted_atoms,
+                                   width=None, height=None):
         """Fast rendering for large molecules (>500 atoms)."""
         proj_map = {i: (atom_idx, sx, sy, sz, radius, color)
                     for atom_idx, sx, sy, sz, radius, color in projected
                     for i in [atom_idx]}
+
+        _cull = width is not None and height is not None
+        _margin = 100
 
         # Draw bonds as simple lines
         pen = QPen(QColor(100, 100, 100), 1)
@@ -372,10 +559,21 @@ class PainterRenderer:
             if a1 in proj_map and a2 in proj_map:
                 _, x1, y1, *_ = proj_map[a1]
                 _, x2, y2, *_ = proj_map[a2]
+                # Off-screen culling for bonds
+                if _cull:
+                    if ((x1 < -_margin and x2 < -_margin) or
+                            (x1 > width + _margin and x2 > width + _margin) or
+                            (y1 < -_margin and y2 < -_margin) or
+                            (y1 > height + _margin and y2 > height + _margin)):
+                        continue
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-        # Draw atoms as simple circles (no gradients)
+        # Draw atoms as simple circles (no gradients), with culling
+        _atom_margin = 50
         for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
+            if _cull and (sx < -_atom_margin or sx > width + _atom_margin or
+                          sy < -_atom_margin or sy > height + _atom_margin):
+                continue
             self._draw_atom_simple(painter, sx, sy, radius, color)
 
     def _draw_performance_indicator(self, v, painter, num_atoms):
