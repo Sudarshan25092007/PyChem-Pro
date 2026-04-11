@@ -3,133 +3,79 @@ Parallel File Loader — Multiprocessing-optimized molecular file loading.
 
 Uses 50% of available CPU cores to speed up file parsing for large molecules.
 Implements chunked reading and parallel processing for MOL, MOL2, SDF, and PDB files.
+
+Delegates all multiprocessing to the centralized ParallelExecutor
+(src/core/parallel.py) so every subsystem shares one process pool
+capped at 50 % of CPU cores.
 """
 
 import os
-import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 import logging
-import warnings
+
+from src.core.parallel import ParallelExecutor
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-# Global flag to track if multiprocessing is safe to use
-_multiprocessing_available = None
-
-def _check_multiprocessing() -> bool:
-    """Check if multiprocessing works in this environment."""
-    global _multiprocessing_available
-    if _multiprocessing_available is not None:
-        return _multiprocessing_available
-    
-    # Default to False for safety on Windows with portable Python
-    # This avoids 60+ second hangs due to DLL import issues
-    _multiprocessing_available = False
-    
-    try:
-        # Use a separate process to test multiprocessing to avoid blocking main thread
-        import threading
-        result = [None]
-        
-        def test_mp():
-            try:
-                test_mp._result = False
-                with mp.Pool(1) as pool:
-                    r = pool.apply_async(lambda: 42)
-                    r.get(timeout=1)
-                    test_mp._result = True
-            except:
-                test_mp._result = False
-        
-        thread = threading.Thread(target=test_mp)
-        thread.daemon = True
-        thread.start()
-        thread.join(timeout=2)
-        
-        if hasattr(test_mp, '_result') and test_mp._result:
-            _multiprocessing_available = True
-            logger.info("Multiprocessing is available")
-        else:
-            logger.warning("Multiprocessing disabled: test timed out or failed")
-            
-    except Exception as e:
-        logger.warning(f"Multiprocessing check failed: {e}")
-    
-    return _multiprocessing_available
-
-
-def get_optimal_workers() -> int:
-    """
-    Calculate optimal number of worker processes (50% of available CPUs).
-    
-    Returns:
-        Number of workers to use (minimum 1, maximum 4 for memory efficiency)
-    """
-    if not _check_multiprocessing():
-        return 1
-    
-    cpu_count = mp.cpu_count()
-    workers = max(1, min(cpu_count // 2, 4))
-    logger.info(f"Using {workers} worker processes (50% of {cpu_count} CPUs, max 4)")
-    return workers
 
 
 class ParallelFileLoader:
     """
     High-performance file loader using multiprocessing for large files.
-    
+
     Automatically detects file size and uses parallel processing for files
     above a threshold (100KB default). Smaller files use standard loading.
-    
+
     Attributes:
-        workers: Number of parallel workers (auto-calculated as 50% of CPUs)
+        executor: ParallelExecutor instance used for multiprocessing
         parallel_threshold_kb: File size threshold for parallel processing
     """
-    
-    def __init__(self, workers: Optional[int] = None, parallel_threshold_kb: float = 100.0, 
-                 timeout_seconds: float = 30.0, use_parallel: Optional[bool] = None):
+
+    def __init__(self, executor: Optional[ParallelExecutor] = None,
+                 parallel_threshold_kb: float = 100.0,
+                 timeout_seconds: float = 30.0,
+                 # Legacy kwargs kept for backward compatibility
+                 workers: Optional[int] = None,
+                 use_parallel: Optional[bool] = None):
         """
         Initialize the parallel file loader.
-        
+
         Args:
-            workers: Number of worker processes (default: 50% of CPUs)
+            executor: ParallelExecutor instance (creates a default one if None)
             parallel_threshold_kb: Minimum file size (KB) to use parallel processing
             timeout_seconds: Maximum time to wait for parallel processing
-            use_parallel: Force enable/disable parallel processing (None = auto-detect)
+            workers: *Deprecated* — ignored when *executor* is supplied.
+                     Kept for backward compatibility; if no executor is given
+                     and workers is set, a ParallelExecutor with that many
+                     workers is created.
+            use_parallel: *Deprecated* — set to False to disable parallelism.
         """
-        # Determine if we should use parallel processing
-        if use_parallel is False:
-            # Explicitly disabled - skip all multiprocessing checks
-            self.workers = 1
-            self._use_parallel = False
-            self.parallel_threshold_kb = parallel_threshold_kb
-            self.timeout_seconds = timeout_seconds
-            self._import_cache = {}
-            logger.info("ParallelFileLoader: parallel processing explicitly disabled")
-            return  # Skip rest of initialization
-        elif use_parallel is None:
-            # Auto-detect (conservative - default to False for safety)
-            use_parallel = _check_multiprocessing()
-        
-        if use_parallel and workers is None:
-            self.workers = get_optimal_workers()
-        elif use_parallel:
-            self.workers = workers
-        else:
-            self.workers = 1  # Fallback to single worker
-            
         self.parallel_threshold_kb = parallel_threshold_kb
         self.timeout_seconds = timeout_seconds
         self._import_cache = {}
-        self._use_parallel = use_parallel
-        
-        if self.workers > 1:
-            logger.info(f"ParallelFileLoader initialized: workers={self.workers}, threshold={parallel_threshold_kb}KB")
+
+        # Determine if parallel processing is explicitly disabled
+        if use_parallel is False:
+            self._use_parallel = False
+            self.executor = executor or ParallelExecutor(max_workers=1)
+            logger.info("ParallelFileLoader: parallel processing explicitly disabled")
+            return
+
+        self._use_parallel = True
+
+        # Build or accept the executor
+        if executor is not None:
+            self.executor = executor
+        elif workers is not None:
+            self.executor = ParallelExecutor(max_workers=workers)
         else:
-            logger.info(f"ParallelFileLoader initialized: using standard (non-parallel) loading")
+            self.executor = ParallelExecutor()
+
+        logger.info(
+            f"ParallelFileLoader initialized: workers={self.executor.num_workers}, "
+            f"threshold={parallel_threshold_kb}KB"
+        )
     
     def load_file(self, filepath: str) -> Any:
         """
@@ -153,8 +99,8 @@ class ParallelFileLoader:
         ext = filepath.suffix.lower()
         
         # Use parallel loading for large files (if available)
-        if (file_size_kb > self.parallel_threshold_kb and 
-            self.workers > 1 and 
+        if (file_size_kb > self.parallel_threshold_kb and
+            self.executor.num_workers > 1 and
             self._use_parallel):
             logger.info(f"Using parallel loading for {filepath.name} ({file_size_kb:.1f}KB)")
             try:
@@ -163,7 +109,7 @@ class ParallelFileLoader:
                 logger.warning(f"Parallel loading failed: {e}. Falling back to standard loading.")
                 return self._load_standard(filepath, ext)
         else:
-            if self.workers == 1:
+            if self.executor.num_workers == 1:
                 logger.info(f"Using standard loading for {filepath.name} ({file_size_kb:.1f}KB)")
             return self._load_standard(filepath, ext)
     
@@ -227,33 +173,23 @@ class ParallelFileLoader:
             raise ValueError("No ATOM/HETATM records found in PDB file")
         
         # Partition atoms into chunks for parallel processing
-        chunk_size = max(1, len(atom_records) // self.workers)
+        num_workers = self.executor.num_workers
+        chunk_size = max(1, len(atom_records) // num_workers)
         chunks = [
-            atom_records[i:i + chunk_size] 
+            atom_records[i:i + chunk_size]
             for i in range(0, len(atom_records), chunk_size)
         ]
-        
+
         logger.info(f"Processing {len(atom_records)} atoms in {len(chunks)} chunks")
-        
-        # Process chunks in parallel with timeout
+
+        # Process chunks via centralized ParallelExecutor
+        results = self.executor.map(
+            _parse_pdb_chunk, chunks, timeout=self.timeout_seconds
+        )
+
         all_atoms = []
-        try:
-            with ProcessPoolExecutor(max_workers=self.workers) as executor:
-                futures = {executor.submit(_parse_pdb_chunk, chunk): i for i, chunk in enumerate(chunks)}
-                
-                for future in as_completed(futures, timeout=self.timeout_seconds):
-                    chunk_idx = futures[future]
-                    try:
-                        atoms = future.result()
-                        all_atoms.extend(atoms)
-                        logger.debug(f"Chunk {chunk_idx} processed: {len(atoms)} atoms")
-                    except Exception as e:
-                        logger.error(f"Error processing chunk {chunk_idx}: {e}")
-                        raise  # Re-raise to trigger fallback
-                        
-        except (FutureTimeoutError, TimeoutError) as e:
-            logger.error(f"Parallel processing timed out after {self.timeout_seconds}s")
-            raise RuntimeError(f"Parallel loading timeout: {e}")
+        for chunk_atoms in results:
+            all_atoms.extend(chunk_atoms)
         
         # Sort by original PDB serial number to maintain order
         all_atoms.sort(key=lambda x: x[0])  # x[0] is serial number
@@ -358,26 +294,28 @@ class ParallelFileLoader:
             
             atom_lines = lines[atom_start:atom_end]
             
-            if len(atom_lines) > 500 and self.workers > 1:
-                # Parallel atom parsing
-                chunk_size = max(1, len(atom_lines) // self.workers)
+            num_workers = self.executor.num_workers
+            if len(atom_lines) > 500 and num_workers > 1:
+                # Parallel atom parsing via centralized ParallelExecutor
+                chunk_size = max(1, len(atom_lines) // num_workers)
                 chunks = [
-                    atom_lines[i:i + chunk_size] 
+                    atom_lines[i:i + chunk_size]
                     for i in range(0, len(atom_lines), chunk_size)
                 ]
-                
-                with ProcessPoolExecutor(max_workers=self.workers) as executor:
-                    futures = [executor.submit(_parse_mol2_atom_chunk, chunk, i * chunk_size) 
-                              for i, chunk in enumerate(chunks)]
-                    
-                    all_atoms = []
-                    for future in as_completed(futures):
-                        all_atoms.extend(future.result())
-                    
-                    # Sort by atom_id and add to molecule
-                    all_atoms.sort(key=lambda x: x[0])
-                    for _, atom in all_atoms:
-                        mol.add_atom(atom)
+
+                results = self.executor.map(
+                    _parse_mol2_atom_chunk_simple, chunks,
+                    timeout=self.timeout_seconds
+                )
+
+                all_atoms = []
+                for chunk_atoms in results:
+                    all_atoms.extend(chunk_atoms)
+
+                # Sort by atom_id and add to molecule
+                all_atoms.sort(key=lambda x: x[0])
+                for _, atom in all_atoms:
+                    mol.add_atom(atom)
             else:
                 # Standard parsing for small files
                 for i, line in enumerate(atom_lines):
@@ -541,10 +479,20 @@ def _parse_mol2_atom_line(line: str, index: int) -> Optional[Tuple[int, Any]]:
 
 
 def _parse_mol2_atom_chunk(lines: List[str], base_index: int) -> List[Tuple[int, Any]]:
-    """Parse a chunk of MOL2 ATOM records."""
+    """Parse a chunk of MOL2 ATOM records (legacy two-arg form)."""
     atoms = []
     for i, line in enumerate(lines):
         result = _parse_mol2_atom_line(line, base_index + i)
+        if result:
+            atoms.append(result)
+    return atoms
+
+
+def _parse_mol2_atom_chunk_simple(lines: List[str]) -> List[Tuple[int, Any]]:
+    """Parse a chunk of MOL2 ATOM records (single-arg for ParallelExecutor.map)."""
+    atoms = []
+    for i, line in enumerate(lines):
+        result = _parse_mol2_atom_line(line, i)
         if result:
             atoms.append(result)
     return atoms

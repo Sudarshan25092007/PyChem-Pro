@@ -11,6 +11,22 @@ if TYPE_CHECKING:
     from src.core.domain.models.molecule import Molecule
 
 
+def load(path: str, parallel: bool = True) -> "Molecule":
+    """Load a molecular file (PDB, MOL, MOL2, SDF).
+
+    Uses parallel chunk parsing for large files by default.
+
+    Args:
+        path: Path to the molecular file.
+        parallel: Allow parallel processing for large files.
+
+    Returns:
+        Molecule instance.
+    """
+    from pychem._bridge import get_registry
+    return get_registry().loader.load(path, parallel=parallel)
+
+
 def parse_smiles(smiles: str):
     """Parse a SMILES string into a Molecule."""
     from src.features.smiles_parser.services.parser import parse_smiles as _parse
@@ -45,11 +61,11 @@ def add_hydrogens(mol) -> int:
 
 def descriptors(mol, names=None) -> dict:
     """Calculate molecular descriptors."""
-    result = {
-        'molecular_weight': mol.molecular_weight(),
-        'num_atoms': mol.num_atoms,
-        'num_bonds': mol.num_bonds,
-        'num_heavy_atoms': mol.num_heavy_atoms,
-        'formula': mol.molecular_formula(),
-    }
-    return result
+    from pychem._bridge import get_registry
+    return get_registry().descriptors.calculate(mol, descriptor_names=names)
+
+
+def descriptors_batch(molecules, names=None) -> list[dict]:
+    """Calculate molecular descriptors for multiple molecules in parallel."""
+    from pychem._bridge import get_registry
+    return get_registry().descriptors.calculate_batch(molecules, descriptor_names=names)

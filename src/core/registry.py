@@ -7,6 +7,8 @@ Created once at startup, passed to consumers via constructor.
 from src.core.parallel import ParallelExecutor
 from src.core.events import EventBus
 from src.services.forcefield.mmff94_service import MMFF94Service
+from src.services.descriptors.descriptor_service import DescriptorService
+from src.services.loading.loader_service import LoaderService
 
 
 class ServiceRegistry:
@@ -23,10 +25,10 @@ class ServiceRegistry:
         self.executor = ParallelExecutor()
         self.event_bus = EventBus()
         self.forcefield = MMFF94Service(self.executor)
+        self.descriptors = DescriptorService(self.executor)
+        self.loader = LoaderService(self.executor)
         # Services added in later phases:
-        # self.loader = LoaderService(self.executor)
         # self.coord_gen = CoordinateGeneratorService(self.executor)
-        # self.descriptors = DescriptorService(self.executor)
         # self.renderer_factory = RendererFactory()
 
     def shutdown(self):
