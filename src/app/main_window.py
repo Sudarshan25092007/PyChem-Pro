@@ -394,6 +394,9 @@ class MainWindow(QMainWindow):
     def _export_image(self, dpi, white_bg):
         _file_ops.export_image(self, dpi, white_bg)
 
+    def _print_views(self):
+        _file_ops.print_views(self)
+
     def _update_recent_files_menu(self):
         _file_ops.update_recent_files_menu(self)
 

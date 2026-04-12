@@ -63,6 +63,12 @@ def _build_file_menu(window, menu_bar):
     file_menu.addAction(close_action)
     window._close_action = close_action
 
+    print_action = QAction("&Print...", window)
+    print_action.setShortcut(QKeySequence("Ctrl+P"))
+    print_action.triggered.connect(window._print_views)
+    file_menu.addAction(print_action)
+    window._print_action = print_action
+
     file_menu.addSeparator()
 
     exit_action = QAction("E&xit", window)
@@ -124,11 +130,6 @@ def _build_plugins_menu(window, menu_bar):
     installed_plugins_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
     installed_plugins_action.triggered.connect(window._toggle_plugin_dock)
     plugins_menu.addAction(installed_plugins_action)
-
-    plugin_manager_action = QAction("&Plugin Manager...", window)
-    plugin_manager_action.setShortcut(QKeySequence("Ctrl+P"))
-    plugin_manager_action.triggered.connect(window._show_plugin_manager)
-    plugins_menu.addAction(plugin_manager_action)
 
     plugins_menu.addSeparator()
 

@@ -177,6 +177,137 @@ def export_image(window, dpi, white_bg):
             QMessageBox.critical(window, "Export Error", str(e))
 
 
+# ── Print ────────────────────────────────────────────────────────
+
+def print_views(window):
+    """
+    Print both 2D and 3D views of the current molecule to a single page.
+
+    Opens a native QPrintDialog, then renders:
+      * the 2D viewer into the top half of the printable area
+      * the 3D viewer into the bottom half of the printable area
+    Both views are fitted and centered inside their half, preserving
+    aspect ratio, so the molecule is fully visible on the page.
+    """
+    if not window.molecule:
+        window.status_bar.showMessage("No molecule to print")
+        return
+
+    try:
+        from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+        from PySide6.QtGui import QPainter, QImage, QColor
+        from PySide6.QtCore import Qt, QRectF
+    except ImportError:
+        QMessageBox.critical(
+            window, "Print Error",
+            "Qt print support is not available. Please install PySide6 with "
+            "print support (PySide6 >= 6.5 normally includes it)."
+        )
+        return
+
+    # Configure printer with sensible defaults
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setDocName(f"PyChem - {window.molecule.name or 'molecule'}")
+
+    dialog = QPrintDialog(printer, window)
+    dialog.setWindowTitle("Print 2D + 3D Views")
+    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+        return
+
+    try:
+        # Get printable area in device pixels
+        page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
+        page_w = int(page_rect.width())
+        page_h = int(page_rect.height())
+        margin = int(min(page_w, page_h) * 0.03)
+
+        # Split page into top (2D) and bottom (3D) halves
+        half_h = (page_h - 3 * margin) // 2
+        top_rect = QRectF(margin, margin, page_w - 2 * margin, half_h)
+        bot_rect = QRectF(margin, margin * 2 + half_h,
+                          page_w - 2 * margin, half_h)
+
+        # Render each viewer into its own QImage at roughly the target size,
+        # then let the QPainter scale it into the page rect while preserving
+        # aspect ratio. This gives crisp output regardless of screen DPI.
+        def _render_viewer(viewer, width, height):
+            img = QImage(int(width), int(height),
+                         QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QColor(255, 255, 255))
+            p = QPainter(img)
+            try:
+                if hasattr(viewer, '_render'):
+                    # MolViewer3D exposes _render(painter, w, h, is_export, scale)
+                    old_bg = getattr(viewer, 'bg_color', None)
+                    if old_bg is not None:
+                        viewer.bg_color = QColor(255, 255, 255)
+                    viewer._render(p, int(width), int(height),
+                                   is_export=True, export_scale=1.0)
+                    if old_bg is not None:
+                        viewer.bg_color = old_bg
+                else:
+                    # MolViewer2D: use its native paintEvent via render()
+                    viewer.render(p)
+            finally:
+                p.end()
+            return img
+
+        # Render 2D
+        v2d = window.viewer_2d
+        img_2d = _render_viewer(v2d, top_rect.width(), top_rect.height())
+
+        # Render 3D
+        v3d = window.viewer_3d
+        img_3d = _render_viewer(v3d, bot_rect.width(), bot_rect.height())
+
+        # Paint onto the printer
+        page_painter = QPainter(printer)
+        try:
+            # Draw headers
+            from src.shared.qt_compat import QFont
+            title_font = QFont("Helvetica", 14)
+            title_font.setBold(True)
+            page_painter.setFont(title_font)
+            page_painter.setPen(QColor(0, 0, 0))
+
+            header_text = (
+                f"PyChem -- {window.molecule.name or 'Molecule'}  |  "
+                f"{window.molecule.molecular_formula()}  |  "
+                f"{window.molecule.num_atoms} atoms, "
+                f"{window.molecule.num_bonds} bonds"
+            )
+            page_painter.drawText(QRectF(margin, margin * 0.25,
+                                         page_w - 2 * margin, margin * 0.7),
+                                  int(Qt.AlignmentFlag.AlignLeft |
+                                      Qt.AlignmentFlag.AlignVCenter),
+                                  header_text)
+
+            # Draw labels
+            label_font = QFont("Helvetica", 10)
+            label_font.setBold(True)
+            page_painter.setFont(label_font)
+            page_painter.drawText(QRectF(margin, top_rect.y() - margin * 0.6,
+                                         page_w - 2 * margin, margin * 0.6),
+                                  int(Qt.AlignmentFlag.AlignLeft),
+                                  "2D View")
+            page_painter.drawText(QRectF(margin, bot_rect.y() - margin * 0.6,
+                                         page_w - 2 * margin, margin * 0.6),
+                                  int(Qt.AlignmentFlag.AlignLeft),
+                                  "3D View")
+
+            # Draw the two images into their respective halves, preserving AR
+            page_painter.drawImage(top_rect, img_2d)
+            page_painter.drawImage(bot_rect, img_3d)
+        finally:
+            page_painter.end()
+
+        window.status_bar.showMessage("Print job sent")
+    except Exception as e:
+        QMessageBox.critical(window, "Print Error",
+                             f"Failed to print:\n{e}")
+        window.status_bar.showMessage(f"Print error: {e}")
+
+
 # ── Drag & Drop ──────────────────────────────────────────────────
 
 def handle_drag_enter(window, event):
