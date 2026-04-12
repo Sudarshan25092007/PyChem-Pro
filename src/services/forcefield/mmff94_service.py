@@ -76,6 +76,39 @@ class MMFF94Service:
     def assign_atom_types(self, mol: Molecule) -> None:
         mol.assign_hybridization()
 
+    def _seed_coords_from_2d(self, mol: Molecule) -> None:
+        """Ensure every atom has numeric 3D coords before optimization.
+
+        Priority: keep existing 3D → else use cached OASA 2D (x2d/y2d) →
+        else generate 2D layout now → last resort, origin. The z-axis is
+        left at 0.0 here; optimize_geometry adds a small random z spread
+        so angle/torsion gradients aren't degenerate in the flat plane.
+        """
+        needs_seed = any(
+            a.x is None or a.y is None or a.z is None for a in mol.atoms
+        )
+        if not needs_seed:
+            return
+
+        have_2d = all(
+            getattr(a, 'x2d', None) is not None and getattr(a, 'y2d', None) is not None
+            for a in mol.atoms
+        )
+        if not have_2d:
+            try:
+                from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
+                CoordinateGenerator2D(mol, force_regenerate=False).generate()
+            except Exception:
+                pass  # fall through to origin below
+
+        for a in mol.atoms:
+            if a.x is None:
+                a.x = float(a.x2d) if getattr(a, 'x2d', None) is not None else 0.0
+            if a.y is None:
+                a.y = float(a.y2d) if getattr(a, 'y2d', None) is not None else 0.0
+            if a.z is None:
+                a.z = float(getattr(a, 'z2d', None) or 0.0)
+
     def assign_charges(self, mol: Molecule) -> None:
         for atom in mol.atoms:
             atom.partial_charge = 0.0
@@ -88,6 +121,7 @@ class MMFF94Service:
             a2.partial_charge -= bci
 
     def compute_energy(self, mol: Molecule) -> float:
+        self._seed_coords_from_2d(mol)
         coords = np.array([[a.x, a.y, a.z] for a in mol.atoms], dtype=np.float64)
         mol.assign_hybridization()
         bond_list = self._build_bond_list(mol)
@@ -98,6 +132,9 @@ class MMFF94Service:
 
     def optimize_geometry(self, mol: Molecule, max_iters=500,
                           convergence=1e-4, method='steepest_descent'):
+        # 0. Seed 3D coords from OASA 2D layout if missing (SMILES input)
+        self._seed_coords_from_2d(mol)
+
         # 1. Assign hybridization
         mol.assign_hybridization()
 

@@ -174,51 +174,82 @@ class MolViewer2D(QWidget):
         self._render(painter, self.width(), self.height())
         painter.end()
 
-    def _render(self, painter, width, height, is_export=False):
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    def _render(self, painter, width, height, is_export=False, export_scale=1.0):
+        """Render the 2D view into *painter* at (width, height).
 
-        self._is_dark_bg = (self.bg_color.lightnessF() < 0.4)
-        painter.fillRect(0, 0, width, height, self.bg_color)
+        When called from an export/print path, pass ``is_export=True``.
+        ``export_scale`` (default 1.0) is a DPR multiplier used by
+        ``file_operations.print_views`` and future high-DPI image save
+        callers — when > 1.0 the widget zoom/pan are temporarily scaled
+        up for the duration of the render so the molecule fills the
+        larger canvas, and ``_original_scale`` is set so the font system
+        (``AtomRenderer2D._get_font``) stabilises text size instead of
+        bloating it linearly with zoom. State is restored in ``finally``.
+        """
+        # Save state we may temporarily mutate for export scaling
+        _saved_scale = self._scale
+        _saved_ox = self._offset_x
+        _saved_oy = self._offset_y
+        _saved_orig = self._original_scale
+        _mutated = False
+        try:
+            if is_export and export_scale and export_scale != 1.0:
+                self._original_scale = _saved_scale
+                self._scale = _saved_scale * export_scale
+                self._offset_x = _saved_ox * export_scale
+                self._offset_y = _saved_oy * export_scale
+                _mutated = True
 
-        # Show placeholder for large proteins instead of trying to generate 2D
-        if self.show_protein_placeholder and self.molecule:
-            self._draw_protein_placeholder(painter, width, height)
-            return
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        if not self.molecule or not self.coords_2d:
+            self._is_dark_bg = (self.bg_color.lightnessF() < 0.4)
+            painter.fillRect(0, 0, width, height, self.bg_color)
+
+            # Show placeholder for large proteins instead of trying to generate 2D
+            if self.show_protein_placeholder and self.molecule:
+                self._draw_protein_placeholder(painter, width, height)
+                return
+
+            if not self.molecule or not self.coords_2d:
+                if not is_export:
+                    self._draw_placeholder(painter, width, height)
+                return
+
+            visible = self._get_visible_atoms()
+            has_label = self._compute_labels(visible)
+
+            # Layer 1: Bonds
+            self._bond_renderer.draw_all_bonds(painter, visible, has_label)
+
+            # Layer 2: Atom labels
+            self._atom_renderer.draw_all_labels(painter, visible, has_label)
+
+            # Layer 3: Selection
+            if self.selected_atoms:
+                self._draw_selection(painter, visible)
+
+            # Layer 4: Distance / angle measurement overlay
+            if len(self.selected_atoms) in (2, 3):
+                self._draw_measurement_overlay(painter, visible)
+
+            # Layer 5: Rubber-band selection rectangle (while Shift+dragging)
+            if self._is_selecting and self._sel_rect_origin and self._sel_rect_end:
+                self._draw_rubber_band(painter)
+
+            # Layer 6: Hover tooltip
+            if self._hovered_atom >= 0 and not is_export:
+                self._draw_hover_tooltip(painter)
+
             if not is_export:
-                self._draw_placeholder(painter, width, height)
-            return
-
-        visible = self._get_visible_atoms()
-        has_label = self._compute_labels(visible)
-
-        # Layer 1: Bonds
-        self._bond_renderer.draw_all_bonds(painter, visible, has_label)
-
-        # Layer 2: Atom labels
-        self._atom_renderer.draw_all_labels(painter, visible, has_label)
-
-        # Layer 3: Selection
-        if self.selected_atoms:
-            self._draw_selection(painter, visible)
-
-        # Layer 4: Distance / angle measurement overlay
-        if len(self.selected_atoms) in (2, 3):
-            self._draw_measurement_overlay(painter, visible)
-
-        # Layer 5: Rubber-band selection rectangle (while Shift+dragging)
-        if self._is_selecting and self._sel_rect_origin and self._sel_rect_end:
-            self._draw_rubber_band(painter)
-
-        # Layer 6: Hover tooltip
-        if self._hovered_atom >= 0 and not is_export:
-            self._draw_hover_tooltip(painter)
-
-        if not is_export:
-            self._draw_overlay(painter)
+                self._draw_overlay(painter)
+        finally:
+            if _mutated:
+                self._scale = _saved_scale
+                self._offset_x = _saved_ox
+                self._offset_y = _saved_oy
+                self._original_scale = _saved_orig
 
     def _get_visible_atoms(self):
         """Return set of atom indices that should be rendered."""
