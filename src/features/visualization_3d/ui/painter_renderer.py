@@ -249,9 +249,12 @@ class PainterRenderer:
                             continue
                         self._draw_atom_sphere(v, painter, atom_idx, sx, sy, sz, radius, color)
         else:
-            # Optimize rendering for large molecules
+            # Optimize rendering for VERY large molecules only.
+            # Below 8000 atoms we still use gradient spheres so PDB proteins
+            # look like real 3D spheres. The gradient cache + off-screen
+            # culling + LOD keep the frame rate acceptable.
             num_atoms = len(sorted_atoms)
-            use_simple_rendering = num_atoms > 500
+            use_simple_rendering = num_atoms > 8000
 
             if use_simple_rendering and v.render_mode == 'ball_and_stick':
                 self._draw_large_molecule_fast(v, painter, projected, sorted_atoms,

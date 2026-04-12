@@ -8,7 +8,10 @@ Features:
 - Mouse rotation, zoom, and pan
 - Atom highlighting on hover
 - High-DPI image export
-- Automatic QPainter / OpenGL switching at 500-atom threshold
+
+Rendering is done directly with QPainter in this widget's paintEvent.
+The PainterRenderer helper holds the gradient cache, off-screen culling,
+and LOD logic for performance on large molecules.
 """
 
 import logging
@@ -129,119 +132,6 @@ class MolViewer3D(QWidget):
 
         self._rotation_timer.timeout.connect(self._mouse_ctrl.auto_rotate_step)
 
-        # --- Hybrid rendering: QStackedWidget + RendererFactory ---
-        self._setup_hybrid_rendering()
-
-    # ─── Hybrid Rendering Setup ─────────────────────────────────
-
-    def _setup_hybrid_rendering(self):
-        """Set up QStackedWidget with QPainter (index 0) and GL (index 1) renderers.
-
-        The QStackedWidget is placed inside MolViewer3D via a zero-margin
-        layout so that the active child fills the entire viewer area.
-        MolViewer3D's own ``paintEvent`` only fires when the stacked widget
-        shows page 0 (a transparent placeholder); for page 1 the
-        GLMoleculeWidget paints itself.
-        """
-        from src.shared.qt_compat import QVBoxLayout
-        try:
-            from PySide6.QtWidgets import QStackedWidget
-        except ImportError:
-            from PyQt6.QtWidgets import QStackedWidget
-        from src.services.rendering.renderer_factory import RendererFactory
-
-        self._factory = RendererFactory()
-        self._gl_widget = None          # Created lazily on first need
-        self._using_gl = False          # True when GL page is active
-
-        # Build the stacked widget inside a tight layout
-        self._stack = QStackedWidget(self)
-
-        # Page 0: transparent placeholder — MolViewer3D paints behind it via
-        # paintEvent.  We use a plain QWidget that is transparent to mouse
-        # and paint events so everything passes through to self.
-        self._painter_page = QWidget(self._stack)
-        self._painter_page.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._painter_page.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self._painter_page.setStyleSheet("background: transparent;")
-        self._stack.addWidget(self._painter_page)  # index 0
-
-        # Page 1 is added lazily via _ensure_gl_widget()
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self._stack)
-
-        # Start on the QPainter page
-        self._stack.setCurrentIndex(0)
-
-    def _ensure_gl_widget(self):
-        """Lazily create and insert the GLMoleculeWidget into the stack.
-
-        Returns True if the GL widget is usable, False otherwise.
-        """
-        if self._gl_widget is not None:
-            return self._factory.check_gl_available(self._gl_widget)
-
-        try:
-            from src.features.visualization_3d.ui.gl_widget import GLMoleculeWidget
-            self._gl_widget = GLMoleculeWidget(self._stack)
-            self._stack.addWidget(self._gl_widget)  # index 1
-            # Force GL initialisation by briefly showing the widget
-            self._gl_widget.show()
-            self._gl_widget.hide()
-            return self._factory.check_gl_available(self._gl_widget)
-        except Exception as exc:
-            logger.warning("Could not create GL widget: %s", exc)
-            self._gl_widget = None
-            return False
-
-    def _sync_camera_to_gl(self):
-        """Copy camera state from self (QPainter side) to the GL widget."""
-        gl = self._gl_widget
-        if gl is None:
-            return
-        gl.rot_x = self.rot_x
-        gl.rot_y = self.rot_y
-        gl.pan_x = self.pan_x
-        gl.pan_y = self.pan_y
-        gl.zoom = self.zoom
-        gl.show_hydrogens = self.show_hydrogens
-        gl.sphere_scale = self.sphere_scale
-        gl.stick_scale = self.stick_scale
-        gl.bg_color = self.bg_color
-        gl.render_mode = self.render_mode
-
-    def _sync_camera_from_gl(self):
-        """Copy camera state from the GL widget back to self."""
-        gl = self._gl_widget
-        if gl is None:
-            return
-        self.rot_x = gl.rot_x
-        self.rot_y = gl.rot_y
-        self.pan_x = gl.pan_x
-        self.pan_y = gl.pan_y
-        self.zoom = gl.zoom
-
-    def _switch_to_gl(self):
-        """Activate the GL page in the stack."""
-        if self._using_gl:
-            return
-        self._sync_camera_to_gl()
-        self._stack.setCurrentIndex(1)
-        self._using_gl = True
-        logger.debug("Switched to OpenGL renderer")
-
-    def _switch_to_painter(self):
-        """Activate the QPainter page in the stack."""
-        if not self._using_gl:
-            return
-        self._sync_camera_from_gl()
-        self._stack.setCurrentIndex(0)
-        self._using_gl = False
-        logger.debug("Switched to QPainter renderer")
-
     # ─── Molecule Loading ─────────────────────────────────────────
 
     def set_molecule(self, molecule):
@@ -254,35 +144,10 @@ class MolViewer3D(QWidget):
                 self.render_mode = 'cartoon'
             else:
                 self.render_mode = 'ball_and_stick'
-
-            # --- Hybrid rendering: decide QPainter vs GL ---
-            if self._factory.should_use_gl(molecule):
-                gl_ok = self._ensure_gl_widget()
-                if gl_ok:
-                    self._sync_camera_to_gl()
-                    self._gl_widget.set_molecule(molecule)
-                    self._switch_to_gl()
-                else:
-                    # GL not available — fall back to QPainter silently
-                    logger.info(
-                        "Molecule has %d atoms (>= 500) but GL unavailable; "
-                        "using QPainter fallback", len(molecule.atoms)
-                    )
-                    self._switch_to_painter()
-            else:
-                # Small molecule — always use QPainter
-                self._switch_to_painter()
-        else:
-            # No molecule or empty — QPainter placeholder
-            self._switch_to_painter()
-
         self.update()
 
     def clear(self):
         self.molecule = None
-        if self._gl_widget is not None:
-            self._gl_widget.clear()
-        self._switch_to_painter()
         self.update()
 
     def toggle_auto_rotate(self):
@@ -299,16 +164,11 @@ class MolViewer3D(QWidget):
         self.pan_y = 0.0
         if self.molecule:
             self._auto_fit()
-        if self._using_gl and self._gl_widget is not None:
-            self._gl_widget.reset_view()
         self.update()
 
     # ─── Rendering ─────────────────────────────────────────────────
 
     def paintEvent(self, event):
-        if self._using_gl:
-            # GL widget handles its own painting via paintGL; skip QPainter work
-            return
         painter = QPainter(self)
         self._renderer.render(self, painter, self.width(), self.height())
         painter.end()
@@ -369,11 +229,6 @@ class MolViewer3D(QWidget):
         Returns:
             True if successful
         """
-        # Sync camera from GL widget if it is currently active so the
-        # QPainter export renders the same viewpoint.
-        if self._using_gl:
-            self._sync_camera_from_gl()
-
         # Calculate pixel dimensions from current widget size and DPI
         scale_factor = dpi / 96.0  # 96 DPI is the default screen DPI
         img_width = int(self.width() * scale_factor)
