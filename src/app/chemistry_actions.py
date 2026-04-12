@@ -31,11 +31,23 @@ def optimize_geometry(window, checked=False, method=None):
             status = "converged" if success else "max steps reached"
             window.status_bar.showMessage(f"Optimized (AM1: {status})")
         else:
-            from src.features.cheminformatics.services.mmff94 import mmff94_optimize_geometry
-            success = mmff94_optimize_geometry(window.molecule, max_iters=500)
+            # Use the new MMFF94Service which adds explicit hydrogens,
+            # assigns BCI partial charges, and runs a proper force field
+            # (bond stretch + angle bending + torsion + VdW).
+            from pychem._bridge import get_registry
+            service = get_registry().forcefield
+            pre_atoms = len(window.molecule.atoms)
+            result = service.optimize_geometry(
+                window.molecule, max_iters=500, method='steepest_descent'
+            )
+            added_h = len(window.molecule.atoms) - pre_atoms
+            window.input_panel.update_molecule_info(window.molecule)
             window.viewer_3d.set_molecule(window.molecule)
-            status = "converged" if success else "max steps reached"
-            window.status_bar.showMessage(f"Optimized (MMFF94: {status})")
+            window.viewer_2d.set_molecule(window.molecule)
+            status = "converged" if result.converged else f"stopped ({result.num_steps} steps)"
+            window.status_bar.showMessage(
+                f"Optimized (MMFF94: {status}, {added_h} H added, E={result.final_energy:.2f})"
+            )
     except Exception as e:
         window.status_bar.showMessage(f"Optimization error: {e}")
 
@@ -77,14 +89,15 @@ def compute_charges(window, checked=False, method=None):
             else:
                 window.status_bar.showMessage("AM1 charge calculation failed")
         elif "MMFF94" in method:
-            from src.features.cheminformatics.services.mmff94 import mmff94_assign_charges
-            success = mmff94_assign_charges(window.molecule)
-            if success:
+            # Use the new MMFF94Service BCI charge assignment
+            from pychem._bridge import get_registry
+            try:
+                get_registry().forcefield.assign_charges(window.molecule)
                 window.input_panel.update_molecule_info(window.molecule)
                 window.viewer_3d.update()
                 window.status_bar.showMessage("MMFF94 partial charges assigned successfully")
-            else:
-                window.status_bar.showMessage("MMFF94 charge calculation failed")
+            except Exception as e:
+                window.status_bar.showMessage(f"MMFF94 charge calculation failed: {e}")
         else:
             from src.features.cheminformatics.electrostatics.gasteiger import compute_gasteiger_charges
             compute_gasteiger_charges(window.molecule)
