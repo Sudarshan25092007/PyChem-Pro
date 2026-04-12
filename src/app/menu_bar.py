@@ -150,6 +150,7 @@ def _build_plugins_menu(window, menu_bar):
 
 def _build_view_menu(window, menu_bar):
     from src.shared.ui.theme import COLORS  # noqa: F401 – only needed at call time
+    from src.shared.qt_compat import QActionGroup
 
     view_menu = menu_bar.addMenu("&View")
 
@@ -180,6 +181,51 @@ def _build_view_menu(window, menu_bar):
     bg_color_2d_action.setShortcut(QKeySequence("Ctrl+Alt+B"))
     bg_color_2d_action.triggered.connect(window._change_2d_bg_color)
     view_menu.addAction(bg_color_2d_action)
+
+    view_menu.addSeparator()
+
+    # ── Theme submenu (Light / Dark / System) ─────────────────
+    from src.shared.ui.theme import ThemeMode, current_mode
+    theme_menu = view_menu.addMenu("&Theme")
+
+    theme_group = QActionGroup(window)
+    theme_group.setExclusive(True)
+
+    active_mode = current_mode()
+
+    theme_system_action = QAction("&System (follow OS)", window)
+    theme_system_action.setCheckable(True)
+    theme_system_action.setChecked(active_mode == ThemeMode.SYSTEM)
+    theme_system_action.triggered.connect(
+        lambda: window._set_theme(ThemeMode.SYSTEM))
+    theme_group.addAction(theme_system_action)
+    theme_menu.addAction(theme_system_action)
+
+    theme_menu.addSeparator()
+
+    theme_light_action = QAction("&Light", window)
+    theme_light_action.setCheckable(True)
+    theme_light_action.setChecked(active_mode == ThemeMode.LIGHT)
+    theme_light_action.triggered.connect(
+        lambda: window._set_theme(ThemeMode.LIGHT))
+    theme_group.addAction(theme_light_action)
+    theme_menu.addAction(theme_light_action)
+
+    theme_dark_action = QAction("&Dark", window)
+    theme_dark_action.setCheckable(True)
+    theme_dark_action.setChecked(active_mode == ThemeMode.DARK)
+    theme_dark_action.triggered.connect(
+        lambda: window._set_theme(ThemeMode.DARK))
+    theme_group.addAction(theme_dark_action)
+    theme_menu.addAction(theme_dark_action)
+
+    # Expose the actions on the window so _set_theme can keep the
+    # check marks in sync when the OS scheme changes under SYSTEM.
+    window._theme_actions = {
+        ThemeMode.SYSTEM: theme_system_action,
+        ThemeMode.LIGHT: theme_light_action,
+        ThemeMode.DARK: theme_dark_action,
+    }
 
 
 # ── Applications ──────────────────────────────────────────────────

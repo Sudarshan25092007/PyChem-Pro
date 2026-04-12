@@ -11,7 +11,11 @@ from src.core.performance import ParallelFileLoader, get_profiler, profile_opera
 
 _DEBUG = False
 
-from src.shared.ui.theme import get_stylesheet, COLORS
+from src.shared.ui.theme import (
+    get_stylesheet, COLORS,
+    ThemeMode, apply_initial_theme, set_theme as _apply_theme,
+    save_theme_preference, theme_signals, current_mode,
+)
 from src.features.control_panel.ui.input_panel import InputPanel
 from src.app.plugin_interface import PluginInterface
 from src.core.domain.models.bond import BondType
@@ -24,6 +28,57 @@ from src.app import file_operations as _file_ops
 from src.app import chemistry_actions as _chem
 from src.app import viewer_coordinator as _viewer
 from src.app import molecule_controller as _mol_ctrl
+
+
+class ThemedTabWidget(QTabWidget):
+    """
+    QTabWidget that paints the empty region beside the tab bar.
+
+    Background
+    ----------
+    On macOS the QTabBar geometry only covers the actual tab labels
+    (e.g. 250 px wide for two short tabs) even when the parent
+    QTabWidget is 1000 px wide. Everything from ``tab_bar.right`` to
+    ``self.right`` within the tab bar's vertical range is **not**
+    painted by any widget -- QTabBar's geometry ends at its own
+    width, ``QTabWidget::pane`` starts below the tab bar, and
+    QMacStyle ignores ``QTabWidget { background-color }`` stylesheet
+    rules for that parent region.
+
+    The result is a stale dark strip that survives every palette,
+    stylesheet, autoFillBackground, and polish combination.
+
+    Fix
+    ---
+    Override ``paintEvent`` and explicitly ``fillRect`` the orphan
+    region with the current theme's ``bg_tertiary`` colour using a
+    raw QPainter, which bypasses QMacStyle entirely.  A single-pixel
+    hairline is drawn along the bottom of that region so the border
+    under the tab bar is continuous with the border under each tab.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        tab_bar = self.tabBar()
+        if tab_bar is None or not tab_bar.isVisible():
+            return
+        x = tab_bar.x() + tab_bar.width()
+        w = self.width() - x
+        h = tab_bar.height()
+        if w <= 0 or h <= 0:
+            return
+        try:
+            from src.shared.ui.theme import COLORS
+            fill = QColor(COLORS.get('bg_tertiary', '#ECECEC'))
+            line = QColor(COLORS.get('border',      '#D5D5D5'))
+            p = QPainter(self)
+            p.fillRect(x, tab_bar.y(), w, h, fill)
+            p.setPen(QPen(line, 1))
+            p.drawLine(x, tab_bar.y() + h - 1,
+                       self.width(), tab_bar.y() + h - 1)
+            p.end()
+        except Exception:
+            pass
 
 
 class MainWindow(QMainWindow):
@@ -64,8 +119,16 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
 
-        # Apply theme
-        self.setStyleSheet(get_stylesheet())
+        # Apply the saved theme preference (defaults to System). This
+        # installs the stylesheet on QApplication so every child widget
+        # inherits it. Must run BEFORE the menu/central widget so they
+        # pick up the right colours on first paint.
+        apply_initial_theme()
+
+        # Keep menu check marks and left-panel styles in sync when the
+        # OS colour scheme changes (System mode only — triggered by
+        # theme_signals()) or when the user picks Light/Dark manually.
+        theme_signals().theme_changed.connect(self._on_theme_changed)
 
         # Initialize plugin system first
         self._init_plugin_system()
@@ -125,16 +188,35 @@ class MainWindow(QMainWindow):
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         h_splitter.setHandleWidth(2)
 
-        # Input panel (left) - more flexible sizing for small screens
+        # Input panel (left). Its objectName is 'leftPanel' and the
+        # #leftPanel rule in the global stylesheet handles the fill
+        # and the hairline right-hand border — no inline override.
+        #
+        # NOTE: the panel has setFixedWidth(300) inside its __init__.
+        # We must ensure the h_splitter initial sizes match that so
+        # the first paint does not clip the sidebar before the fixed
+        # width is honoured on the second layout pass.
         self.input_panel = InputPanel()
-        self.input_panel.setMinimumWidth(280)  # Reduced from 340 for small screens
-        self.input_panel.setMaximumWidth(450)  # Allow some expansion but not too much
-        self.input_panel.setStyleSheet(f"background-color: {COLORS['bg_secondary']};")
         h_splitter.addWidget(self.input_panel)
 
-        # Tabbed viewer area (right)
-        self.viewer_tabs = QTabWidget()
+        # Tabbed viewer area (right).  Use ThemedTabWidget which
+        # overrides paintEvent to fill the "orphan" strip beside the
+        # tab bar with the theme's bg_tertiary colour -- see the
+        # ThemedTabWidget docstring for the full explanation of why
+        # QTabWidget/QTabBar stylesheet rules cannot cover that region
+        # on macOS.
+        self.viewer_tabs = ThemedTabWidget()
         self.viewer_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.viewer_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self.viewer_tabs.setUsesScrollButtons(False)
+        self._viewer_tab_bar = self.viewer_tabs.tabBar()
+        if self._viewer_tab_bar is not None:
+            self._viewer_tab_bar.setExpanding(False)
+            self._viewer_tab_bar.setUsesScrollButtons(False)
+            # Fill the empty area behind the tabs so nothing native
+            # bleeds through on theme swap.
+            self._viewer_tab_bar.setAutoFillBackground(True)
+            self._viewer_tab_bar.setDrawBase(False)
 
         self.viewer_3d = MolViewer3D()
         self.viewer_2d = MolViewer2D()
@@ -142,14 +224,25 @@ class MainWindow(QMainWindow):
         self.viewer_tabs.addTab(self.viewer_3d, "3D View")
         self.viewer_tabs.addTab(self.viewer_2d, "2D View")
 
+        # Apply theme-specific inline stylesheet to the viewer tabs so
+        # the empty strip beside the tabs and the pane track theme
+        # swaps without relying on the global cascade (which Qt's
+        # native QTabBar paint on macOS ignores).
+        self._apply_viewer_tabs_theme()
+        try:
+            theme_signals().theme_changed.connect(self._apply_viewer_tabs_theme)
+        except Exception:
+            pass
+
         # Plugin dock widget (right side) instead of tab bar
         self._init_plugin_dock()
 
         h_splitter.addWidget(self.viewer_tabs)
         h_splitter.setStretchFactor(0, 0)
         h_splitter.setStretchFactor(1, 1)
-        # More flexible initial sizes - left panel 25%, main area 75%
-        h_splitter.setSizes([240, 960])  # 25% left panel, 75% main area for more toolbar space
+        # Match the initial sizes to InputPanel's fixed 300 px so the
+        # sidebar renders at its final width on the very first paint.
+        h_splitter.setSizes([300, 980])
 
         v_splitter.addWidget(h_splitter)
         v_splitter.setStretchFactor(0, 0)
@@ -163,88 +256,71 @@ class MainWindow(QMainWindow):
     # ── Plugin dock ──────────────────────────────────────────────
 
     def _init_plugin_dock(self):
-        """Create a dockable sidebar for plugin management."""
+        """
+        Create a dockable sidebar for plugin management.
+
+        Styling comes from the global theme — QListWidget, QPushButton
+        and QTextEdit are already styled there. Only the dock header
+        label and container background need inline styling, and those
+        are reapplied on theme change via ``_apply_plugin_dock_theme``.
+        """
         self.plugin_dock = QDockWidget("Plugins", self)
-        self.plugin_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.plugin_dock.setAllowedAreas(
+            Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.LeftDockWidgetArea
+        )
         self.plugin_dock.setMinimumWidth(220)
 
-        dock_container = QWidget()
-        dock_layout = QVBoxLayout(dock_container)
-        dock_layout.setContentsMargins(6, 6, 6, 6)
-        dock_layout.setSpacing(6)
+        self._plugin_dock_container = QWidget()
+        dock_layout = QVBoxLayout(self._plugin_dock_container)
+        dock_layout.setContentsMargins(12, 14, 12, 14)
+        dock_layout.setSpacing(10)
 
-        # Header label
-        header = QLabel("Installed Plugins")
-        header.setStyleSheet(f"font-weight: bold; color: {COLORS['text_primary']}; font-size: 13px;")
-        dock_layout.addWidget(header)
+        self._plugin_dock_header = QLabel("Installed plugins")
+        self._plugin_dock_header.setObjectName("labelSection")
+        dock_layout.addWidget(self._plugin_dock_header)
 
-        # Plugin list
+        # Plugin list — global QListWidget rule styles it.
         self.plugin_list = QListWidget()
-        self.plugin_list.setStyleSheet(f"""
-            QListWidget {{
-                background: {COLORS['bg_widget']};
-                color: {COLORS['text_primary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                font-size: 12px;
-            }}
-            QListWidget::item {{
-                padding: 6px 8px;
-            }}
-            QListWidget::item:selected {{
-                background: {COLORS['accent']};
-            }}
-        """)
         dock_layout.addWidget(self.plugin_list)
 
-        # Plugin action buttons
+        # Plugin action buttons — #btnSecondary uses global rules.
         btn_row = QHBoxLayout()
-        btn_style = f"""
-            QPushButton {{
-                background: {COLORS['bg_widget']};
-                color: {COLORS['text_primary']};
-                padding: 4px 10px;
-                border-radius: 3px;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                background: {COLORS['accent']};
-            }}
-        """
+        btn_row.setSpacing(8)
 
         load_btn = QPushButton("Load")
-        load_btn.setStyleSheet(btn_style)
+        load_btn.setObjectName("btnSecondary")
         load_btn.setToolTip("Load selected plugin")
         load_btn.clicked.connect(self._load_selected_plugin)
         btn_row.addWidget(load_btn)
 
         unload_btn = QPushButton("Unload")
-        unload_btn.setStyleSheet(btn_style)
+        unload_btn.setObjectName("btnSecondary")
         unload_btn.setToolTip("Unload selected plugin")
         unload_btn.clicked.connect(self._unload_selected_plugin)
         btn_row.addWidget(unload_btn)
 
         dock_layout.addLayout(btn_row)
 
-        # Plugin detail area
+        details_label = QLabel("Details")
+        details_label.setObjectName("labelSection")
+        dock_layout.addWidget(details_label)
+
         self.plugin_detail = QTextEdit()
         self.plugin_detail.setReadOnly(True)
-        self.plugin_detail.setMaximumHeight(120)
-        self.plugin_detail.setStyleSheet(f"""
-            QTextEdit {{
-                background: {COLORS['bg_widget']};
-                color: {COLORS['text_secondary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                font-size: 11px;
-                padding: 4px;
-            }}
-        """)
-        self.plugin_detail.setPlaceholderText("Select a plugin to see details...")
+        self.plugin_detail.setMaximumHeight(140)
+        self.plugin_detail.setPlaceholderText(
+            "Select a plugin to see details."
+        )
         dock_layout.addWidget(self.plugin_detail)
 
-        dock_container.setStyleSheet(f"background-color: {COLORS['bg_secondary']};")
-        self.plugin_dock.setWidget(dock_container)
+        self._apply_plugin_dock_theme()
+        try:
+            theme_signals().theme_changed.connect(self._apply_plugin_dock_theme)
+        except Exception:
+            pass
+
+        self.plugin_dock.setWidget(self._plugin_dock_container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.plugin_dock)
         self.plugin_dock.hide()  # Hidden by default
 
@@ -396,6 +472,129 @@ class MainWindow(QMainWindow):
 
     def _print_views(self):
         _file_ops.print_views(self)
+
+    # ── Theme ────────────────────────────────────────────────────
+
+    def _apply_plugin_dock_theme(self):
+        """Re-apply theme-dependent inline styling on the plugin dock."""
+        if hasattr(self, '_plugin_dock_container'):
+            self._plugin_dock_container.setStyleSheet(
+                f"background-color: {COLORS['bg_secondary']};"
+            )
+
+    def _apply_viewer_tabs_theme(self):
+        """
+        Paint the viewer QTabWidget's tab bar, pane, and empty strip
+        beside the tabs from the current COLORS so theme swaps cannot
+        leave a dark native strip on the right.
+
+        macOS's native QTabBar paint reads the widget's QPalette, NOT
+        the stylesheet cascade. Inline stylesheets alone are enough on
+        programmatic grab() but on a live window the native paint
+        still wins. We therefore set BOTH the palette and the inline
+        stylesheet on QTabWidget and QTabBar, plus the backing
+        autoFillBackground flag, so every painter path picks up the
+        right colour no matter which one Qt chooses to use.
+        """
+        if not hasattr(self, 'viewer_tabs'):
+            return
+        bg_pane = COLORS['bg_primary']
+        bg_bar = COLORS['bg_tertiary']
+        bg_tab = COLORS['bg_tertiary']
+        bg_tab_sel = COLORS['bg_primary']
+        border = COLORS['border']
+        text = COLORS['text_primary']
+        text_dim = COLORS['text_secondary']
+        accent = COLORS['accent']
+        hover = COLORS['bg_hover']
+
+        # 1. Palette — this is what macOS native QTabBar actually reads.
+        bar_color = QColor(bg_bar)
+        text_color = QColor(text)
+        pal = self.viewer_tabs.palette()
+        pal.setColor(QPalette.ColorRole.Window, bar_color)
+        pal.setColor(QPalette.ColorRole.Base, bar_color)
+        pal.setColor(QPalette.ColorRole.Button, bar_color)
+        pal.setColor(QPalette.ColorRole.WindowText, text_color)
+        pal.setColor(QPalette.ColorRole.ButtonText, text_color)
+        self.viewer_tabs.setPalette(pal)
+        self.viewer_tabs.setAutoFillBackground(True)
+
+        if self._viewer_tab_bar is not None:
+            pal2 = self._viewer_tab_bar.palette()
+            pal2.setColor(QPalette.ColorRole.Window, bar_color)
+            pal2.setColor(QPalette.ColorRole.Base, bar_color)
+            pal2.setColor(QPalette.ColorRole.Button, bar_color)
+            pal2.setColor(QPalette.ColorRole.WindowText, text_color)
+            pal2.setColor(QPalette.ColorRole.ButtonText, text_color)
+            self._viewer_tab_bar.setPalette(pal2)
+            self._viewer_tab_bar.setAutoFillBackground(True)
+
+        # 2. Stylesheet — this is what applies to the tab shapes and
+        #    pseudo-states (hover / selected). The palette covers the
+        #    empty strip the stylesheet can't reach reliably.
+        self.viewer_tabs.setStyleSheet(
+            f"QTabWidget {{ background-color: {bg_bar}; }}"
+            f"QTabWidget::pane {{"
+            f"  border: 1px solid {border};"
+            f"  background-color: {bg_pane};"
+            f"  top: 0;"
+            f"}}"
+            f"QTabBar {{"
+            f"  background-color: {bg_bar};"
+            f"  border: none;"
+            f"}}"
+            f"QTabBar::tab {{"
+            f"  background-color: {bg_tab};"
+            f"  color: {text_dim};"
+            f"  padding: 9px 22px;"
+            f"  min-width: 80px;"
+            f"  border: none;"
+            f"  border-right: 1px solid {border};"
+            f"  border-bottom: 1px solid {border};"
+            f"  font-size: 12px;"
+            f"  font-weight: 500;"
+            f"}}"
+            f"QTabBar::tab:selected {{"
+            f"  background-color: {bg_tab_sel};"
+            f"  color: {text};"
+            f"  border-bottom: 2px solid {accent};"
+            f"}}"
+            f"QTabBar::tab:hover:!selected {{"
+            f"  color: {text};"
+            f"  background-color: {hover};"
+            f"}}"
+        )
+
+        # 3. Force a repaint.
+        if self._viewer_tab_bar is not None:
+            self._viewer_tab_bar.style().unpolish(self._viewer_tab_bar)
+            self._viewer_tab_bar.style().polish(self._viewer_tab_bar)
+            self._viewer_tab_bar.update()
+        self.viewer_tabs.style().unpolish(self.viewer_tabs)
+        self.viewer_tabs.style().polish(self.viewer_tabs)
+        self.viewer_tabs.update()
+
+    def _set_theme(self, mode):
+        """User picked a theme from View → Theme menu."""
+        _apply_theme(mode)
+        save_theme_preference(mode)
+
+    def _on_theme_changed(self):
+        """
+        Called after any theme swap (user action or OS change while
+        SYSTEM is selected). Keeps the menu radio group in sync with
+        the active mode.
+        """
+        actions = getattr(self, '_theme_actions', None)
+        if not actions:
+            return
+        active = current_mode()
+        for mode, action in actions.items():
+            try:
+                action.setChecked(mode == active)
+            except Exception:
+                pass
 
     def _update_recent_files_menu(self):
         _file_ops.update_recent_files_menu(self)

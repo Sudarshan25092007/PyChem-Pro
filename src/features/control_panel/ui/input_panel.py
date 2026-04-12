@@ -6,9 +6,9 @@ from src.shared.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QTextEdit,
     QComboBox, QCheckBox, QFrame, QSizePolicy, QSpinBox,
-    QScrollArea, QSlider, Qt, Signal, QFont
+    QScrollArea, QSlider, Qt, Signal, QFont, QPalette, QColor
 )
-from src.shared.ui.theme import COLORS
+from src.shared.ui.theme import COLORS, theme_signals
 
 
 class InputPanel(QWidget):
@@ -28,294 +28,363 @@ class InputPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(320)
+        # objectName 'leftPanel' is kept for the global stylesheet
+        # hairline-border rule. The background fill is painted via
+        # an explicit inline stylesheet applied in _apply_theme()
+        # because Qt's QScrollArea palette caching (on macOS) refuses
+        # to follow a live theme swap through the app-level stylesheet
+        # cascade.  Inline stylesheets win and give us reliable swaps.
+        self.setObjectName("leftPanel")
+        self.setFixedWidth(300)
         self._init_ui()
+        self._apply_theme()
+        try:
+            theme_signals().theme_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+
+    def _apply_theme(self):
+        """
+        Paint the panel, container, and scrollbar from the CURRENT
+        COLORS values. Two mechanisms are used in parallel:
+
+        * An inline Qt stylesheet — governs the rounded shapes,
+          padding, hover/focus states.
+        * A QPalette assignment — governs the native macOS QScrollBar
+          and QScrollArea paint, which reads from palette roles and
+          NOT from the stylesheet cascade.
+
+        Both are needed because neither alone covers every Qt paint
+        path on every platform.
+        """
+        bg = COLORS['bg_secondary']
+        border = COLORS['border']
+        scroll_bg = COLORS['scrollbar_bg']
+        scroll_handle = COLORS['scrollbar_handle']
+        accent = COLORS['accent']
+        text = COLORS['text_primary']
+
+        bg_color = QColor(bg)
+        text_color = QColor(text)
+        handle_color = QColor(scroll_handle)
+
+        # ── The panel itself (stylesheet) ────────────────────────
+        self.setStyleSheet(
+            "QWidget#leftPanel {"
+            f"  background-color: {bg};"
+            f"  border-right: 1px solid {border};"
+            "}"
+        )
+        # Panel palette (for native child widgets that read it).
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, bg_color)
+        pal.setColor(QPalette.ColorRole.Base, bg_color)
+        pal.setColor(QPalette.ColorRole.WindowText, text_color)
+        self.setPalette(pal)
+
+        # ── Inner scroll-area container ─────────────────────────
+        if hasattr(self, '_scroll_container') and self._scroll_container is not None:
+            self._scroll_container.setStyleSheet(
+                f"background-color: {bg};"
+            )
+            cpal = self._scroll_container.palette()
+            cpal.setColor(QPalette.ColorRole.Window, bg_color)
+            cpal.setColor(QPalette.ColorRole.Base, bg_color)
+            self._scroll_container.setPalette(cpal)
+
+        # ── Scroll area + its QScrollBar ────────────────────────
+        if hasattr(self, '_scroll') and self._scroll is not None:
+            self._scroll.setStyleSheet(
+                f"QScrollArea {{ background-color: {bg}; border: none; }}"
+                f"QScrollBar:vertical {{"
+                f"  background: {scroll_bg};"
+                f"  width: 10px;"
+                f"  margin: 0;"
+                f"  border: none;"
+                f"}}"
+                f"QScrollBar::handle:vertical {{"
+                f"  background: {scroll_handle};"
+                f"  border-radius: 3px;"
+                f"  min-height: 24px;"
+                f"  margin: 2px 3px;"
+                f"}}"
+                f"QScrollBar::handle:vertical:hover {{"
+                f"  background: {accent};"
+                f"}}"
+                f"QScrollBar::add-line:vertical,"
+                f"QScrollBar::sub-line:vertical {{"
+                f"  height: 0; background: none;"
+                f"}}"
+                f"QScrollBar::add-page:vertical,"
+                f"QScrollBar::sub-page:vertical {{"
+                f"  background: {scroll_bg};"
+                f"}}"
+            )
+            # Palette on the scroll area AND its viewport — this is
+            # what macOS native QScrollBar paint actually reads.
+            spal = self._scroll.palette()
+            spal.setColor(QPalette.ColorRole.Window, bg_color)
+            spal.setColor(QPalette.ColorRole.Base, bg_color)
+            spal.setColor(QPalette.ColorRole.Button, handle_color)
+            self._scroll.setPalette(spal)
+            vp = self._scroll.viewport()
+            if vp is not None:
+                vpal = vp.palette()
+                vpal.setColor(QPalette.ColorRole.Window, bg_color)
+                vpal.setColor(QPalette.ColorRole.Base, bg_color)
+                vp.setPalette(vpal)
+                vp.setAutoFillBackground(True)
+            # The scrollbar itself.
+            vbar = self._scroll.verticalScrollBar()
+            if vbar is not None:
+                bpal = vbar.palette()
+                bpal.setColor(QPalette.ColorRole.Window, QColor(scroll_bg))
+                bpal.setColor(QPalette.ColorRole.Base, QColor(scroll_bg))
+                bpal.setColor(QPalette.ColorRole.Button, handle_color)
+                bpal.setColor(QPalette.ColorRole.ButtonText, handle_color)
+                vbar.setPalette(bpal)
+                vbar.setAutoFillBackground(True)
+
+        # Belt and braces: unpolish + polish every descendant so any
+        # cached palettes are discarded.
+        for child in self.findChildren(QWidget):
+            try:
+                st = child.style()
+                st.unpolish(child)
+                st.polish(child)
+                child.update()
+            except Exception:
+                pass
+        self.update()
+
+    # ─── Spacing scale ──────────────────────────────────────────
+    SPACE_XS = 4
+    SPACE_SM = 6
+    SPACE_MD = 10
+    SPACE_LG = 14
+    SPACE_XL = 20
 
     def _init_ui(self):
-        # Use a scroll area so the panel works on small screens
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # The scroll area's viewport inherits the palette from its
+        # parent but we explicitly fill the inner container in
+        # _apply_theme() so nothing shows through with a stale colour.
+        scroll.setAutoFillBackground(True)
+        self._scroll = scroll
 
         container = QWidget()
+        container.setAutoFillBackground(True)
+        self._scroll_container = container
         layout = QVBoxLayout(container)
-        layout.setSpacing(10)
-        layout.setContentsMargins(14, 14, 14, 14)
+        # Tight outer padding. The old 16 px all-around felt airy.
+        layout.setSpacing(self.SPACE_MD)
+        layout.setContentsMargins(self.SPACE_MD, self.SPACE_MD,
+                                  self.SPACE_MD, self.SPACE_MD)
 
-        # ── Title ──
-        title = QLabel("SMILES to 3D")
+        # ── Brand header ────────────────────────────────────────
+        title = QLabel("PyChem")
         title.setObjectName("labelTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(title)
 
-        subtitle = QLabel("Molecular Structure Converter")
+        subtitle = QLabel("Molecular workbench")
         subtitle.setObjectName("labelSubtitle")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(subtitle)
 
-        layout.addSpacing(4)
-
-        # ── SMILES Input ──
-        input_group = QGroupBox("SMILES Input")
+        # ── SMILES Input ────────────────────────────────────────
+        # IMPORTANT: inner layout uses ZERO content margins so the
+        # QGroupBox's own padding is the ONLY inset. Otherwise the
+        # two paddings compound and the input field floats in a sea
+        # of dead space.
+        input_group = QGroupBox("Input")
         input_layout = QVBoxLayout(input_group)
-        input_layout.setSpacing(8)
+        input_layout.setSpacing(self.SPACE_XS)
+        input_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.smiles_input = QTextEdit()
-        self.smiles_input.setPlaceholderText("Enter SMILES notation here...\n\nExamples:\nc1ccccc1  (Benzene)\nCCO  (Ethanol)\nCC(=O)O  (Acetic acid)")
-        self.smiles_input.setMinimumHeight(90)
-        self.smiles_input.setMaximumHeight(110)
-        self.smiles_input.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {COLORS['bg_widget']};
-                font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
-                font-size: 14px;
-                border: 2px solid {COLORS['border']};
-                border-radius: 8px;
-                padding: 8px;
-            }}
-            QTextEdit:focus {{
-                border-color: {COLORS['border_focus']};
-            }}
-        """)
+        self.smiles_input = QLineEdit()
+        self.smiles_input.setPlaceholderText("Enter SMILES...")
+        self.smiles_input.setClearButtonEnabled(True)
+        self.smiles_input.returnPressed.connect(self._on_convert)
         input_layout.addWidget(self.smiles_input)
+
+        hint = QLabel("e.g.  c1ccccc1   ·   CCO   ·   CC(=O)O")
+        hint.setObjectName("labelHint")
+        input_layout.addWidget(hint)
 
         layout.addWidget(input_group)
 
-        # ── Convert Button ──
+        # ── Primary action ──────────────────────────────────────
         self.convert_btn = QPushButton("Convert to 3D")
-        self.convert_btn.setFixedHeight(42)
+        self.convert_btn.setFixedHeight(32)
         self.convert_btn.setObjectName("btnSuccess")
-        font = self.convert_btn.font()
-        font.setPointSize(13)
-        font.setBold(True)
-        self.convert_btn.setFont(font)
+        self.convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.convert_btn.clicked.connect(self._on_convert)
         layout.addWidget(self.convert_btn)
 
-        # ── Progress ──
+        # ── Progress ────────────────────────────────────────────
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
 
-        # ── View Options ──
-        view_group = QGroupBox("View Options")
+        # ── View Options ────────────────────────────────────────
+        view_group = QGroupBox("View")
         view_layout = QVBoxLayout(view_group)
-        view_layout.setSpacing(6)
+        view_layout.setSpacing(self.SPACE_XS)
+        view_layout.setContentsMargins(0, 0, 0, 0)
 
-        checkbox_style = f"""
-            QCheckBox {{
-                color: {COLORS['text_primary']};
-                spacing: 8px;
-            }}
-            QCheckBox::indicator {{
-                width: 16px; height: 16px;
-                border-radius: 4px;
-                border: 2px solid {COLORS['border']};
-                background-color: {COLORS['bg_widget']};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {COLORS['accent']};
-                border-color: {COLORS['accent']};
-            }}
-        """
-
-        self.show_h_check = QCheckBox("Show Hydrogens")
-        self.show_h_check.setChecked(False)  # BKChem-style: hide H by default
-        self.show_h_check.setStyleSheet(checkbox_style)
+        self.show_h_check = QCheckBox("Show hydrogens")
+        self.show_h_check.setChecked(False)
         view_layout.addWidget(self.show_h_check)
 
-        self.show_labels_check = QCheckBox("Show Labels")
+        self.show_labels_check = QCheckBox("Show atom labels")
         self.show_labels_check.setChecked(False)
-        self.show_labels_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_labels_check)
 
-        self.show_sidechains_check = QCheckBox("Show Side Chains")
+        self.show_sidechains_check = QCheckBox("Show side chains")
         self.show_sidechains_check.setChecked(False)
-        self.show_sidechains_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_sidechains_check)
 
-        self.show_sasa_check = QCheckBox("Show SASA Surface")
+        self.show_sasa_check = QCheckBox("SASA surface")
         self.show_sasa_check.setChecked(False)
-        self.show_sasa_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.show_sasa_check)
 
-        self.sasa_selected_only_check = QCheckBox("SASA Selection Only")
+        self.sasa_selected_only_check = QCheckBox("SASA — selection only")
         self.sasa_selected_only_check.setChecked(False)
-        self.sasa_selected_only_check.setStyleSheet(checkbox_style)
         view_layout.addWidget(self.sasa_selected_only_check)
 
+        view_layout.addSpacing(self.SPACE_XS)
+
         render_row = QHBoxLayout()
-        render_label = QLabel("Style:")
+        render_row.setSpacing(self.SPACE_SM)
+        render_label = QLabel("Style")
+        render_label.setObjectName("labelMuted")
+        render_label.setFixedWidth(40)
         render_row.addWidget(render_label)
         self.render_combo = QComboBox()
-        self.render_combo.addItems(["Ball & Stick", "Space Fill", "Wireframe", "Cartoon", "Ribbon", "Backbone"])
+        self.render_combo.addItems([
+            "Ball & Stick", "Space Fill", "Wireframe",
+            "Cartoon", "Ribbon", "Backbone",
+        ])
         render_row.addWidget(self.render_combo, 1)
         view_layout.addLayout(render_row)
 
-        # Separator
-        sep1 = QFrame()
-        sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
-        view_layout.addWidget(sep1)
+        view_layout.addSpacing(self.SPACE_XS)
 
-        # Radius sliders
-        slider_style = f"""
-            QSlider::groove:horizontal {{
-                background: {COLORS['bg_widget']};
-                height: 6px;
-                border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {COLORS['accent']};
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-            }}
-            QSlider::handle:horizontal:hover {{
-                background: {COLORS['accent_hover']};
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {COLORS['accent']};
-                border-radius: 3px;
-            }}
-        """
-
-        # Sphere radius
         self.sphere_slider, self.sphere_label = self._make_slider(
-            view_layout, "Sphere:", 10, 300, 100, slider_style,
+            view_layout, "Sphere", 10, 300, 100, None,
             lambda v: self._on_scale_changed('sphere', v)
         )
-
-        # Stick radius
         self.stick_slider, self.stick_label = self._make_slider(
-            view_layout, "Stick:", 10, 300, 100, slider_style,
+            view_layout, "Stick", 10, 300, 100, None,
             lambda v: self._on_scale_changed('stick', v)
         )
-
-        # Line radius
         self.line_slider, self.line_label = self._make_slider(
-            view_layout, "Line:", 10, 300, 100, slider_style,
+            view_layout, "Line", 10, 300, 100, None,
             lambda v: self._on_scale_changed('line', v)
         )
 
         layout.addWidget(view_group)
 
-        # ── Export ──
+        # ── Export ──────────────────────────────────────────────
         export_group = QGroupBox("Export")
         export_layout = QVBoxLayout(export_group)
-        export_layout.setSpacing(8)
+        export_layout.setSpacing(self.SPACE_XS)
+        export_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Structure files row
         struct_row = QHBoxLayout()
+        struct_row.setSpacing(self.SPACE_SM)
         self.sdf_btn = QPushButton("Save SDF")
         self.sdf_btn.setObjectName("btnSecondary")
+        self.sdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sdf_btn.clicked.connect(self.export_sdf_requested.emit)
         self.sdf_btn.setEnabled(False)
         struct_row.addWidget(self.sdf_btn)
 
         self.mol2_btn = QPushButton("Save MOL2")
         self.mol2_btn.setObjectName("btnSecondary")
+        self.mol2_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mol2_btn.clicked.connect(self.export_mol2_requested.emit)
         self.mol2_btn.setEnabled(False)
         struct_row.addWidget(self.mol2_btn)
         export_layout.addLayout(struct_row)
 
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
-        export_layout.addWidget(sep)
-
-        # Image export DPI row
         dpi_row = QHBoxLayout()
-        dpi_row.setSpacing(8)
-        dpi_label = QLabel("Image DPI:")
+        dpi_row.setSpacing(self.SPACE_SM)
+        dpi_label = QLabel("DPI")
+        dpi_label.setObjectName("labelMuted")
+        dpi_label.setFixedWidth(40)
         dpi_row.addWidget(dpi_label)
 
         self.dpi_spin = QSpinBox()
         self.dpi_spin.setRange(72, 1200)
         self.dpi_spin.setValue(300)
         self.dpi_spin.setSingleStep(50)
-        self.dpi_spin.setFixedWidth(100)
-        self.dpi_spin.setStyleSheet(f"""
-            QSpinBox {{
-                background-color: {COLORS['bg_widget']};
-                border: 2px solid {COLORS['border']};
-                border-radius: 6px;
-                padding: 4px 8px;
-                color: {COLORS['text_primary']};
-                font-size: 13px;
-            }}
-            QSpinBox:focus {{ border-color: {COLORS['border_focus']}; }}
-            QSpinBox::up-button, QSpinBox::down-button {{
-                width: 18px;
-                border: none;
-                background: {COLORS['bg_hover']};
-            }}
-            QSpinBox::up-button {{ border-top-right-radius: 4px; }}
-            QSpinBox::down-button {{ border-bottom-right-radius: 4px; }}
-        """)
+        self.dpi_spin.setFixedWidth(96)
         dpi_row.addWidget(self.dpi_spin)
         dpi_row.addStretch()
         export_layout.addLayout(dpi_row)
 
-        # White background checkbox removed — exports always use white bg
-        # for publication quality (standard in ChemDraw, PyMOL, etc.)
-
-        self.export_img_btn = QPushButton("Export Image")
+        self.export_img_btn = QPushButton("Export image")
         self.export_img_btn.setObjectName("btnSecondary")
+        self.export_img_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_img_btn.clicked.connect(self._on_export_image)
         self.export_img_btn.setEnabled(False)
         export_layout.addWidget(self.export_img_btn)
 
         layout.addWidget(export_group)
 
-        # ── Molecule Info ──
-        info_group = QGroupBox("Molecule Info")
+        # ── Molecule Info ───────────────────────────────────────
+        info_group = QGroupBox("Molecule")
         info_layout = QVBoxLayout(info_group)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
 
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
-        self.info_text.setMinimumHeight(100)
-        self.info_text.setMaximumHeight(140)
-        self.info_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {COLORS['bg_widget']};
-                font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
-                font-size: 12px;
-                border-radius: 8px;
-                border: 1px solid {COLORS['border']};
-                padding: 6px;
-            }}
-        """)
-        self.info_text.setPlaceholderText("Molecule info appears here...")
+        self.info_text.setMinimumHeight(96)
+        self.info_text.setMaximumHeight(128)
+        self.info_text.setFrameShape(QFrame.Shape.NoFrame)
+        self.info_text.setStyleSheet(
+            # Inside a QGroupBox already, so drop the border and
+            # blend with the card fill to remove visual clutter.
+            "QTextEdit { border: none; background: transparent; padding: 0; }"
+        )
+        self.info_text.setPlaceholderText(
+            "No molecule loaded."
+        )
         info_layout.addWidget(self.info_text)
 
         layout.addWidget(info_group)
 
         layout.addStretch()
 
-        # ── Footer ──
-        footer = QLabel("PyChem molecular viewer v1.0")
+        # ── Footer ──────────────────────────────────────────────
+        footer = QLabel("PyChem  ·  v1.0")
         footer.setObjectName("labelMuted")
-        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(footer)
 
         scroll.setWidget(container)
         outer_layout.addWidget(scroll)
 
     def _on_convert(self):
-        smiles = self.smiles_input.toPlainText().strip()
-        # Take first line if multi-line
-        if '\n' in smiles:
-            smiles = smiles.split('\n')[0].strip()
+        # QLineEdit exposes .text(); fall back to .toPlainText() if
+        # the widget was ever swapped back to a multi-line editor.
+        if hasattr(self.smiles_input, 'text'):
+            smiles = self.smiles_input.text().strip()
+        else:
+            smiles = self.smiles_input.toPlainText().strip()
         if smiles:
             self.convert_requested.emit(smiles)
 
@@ -331,18 +400,25 @@ class InputPanel(QWidget):
             self.info_text.clear()
             return
 
+        def _row(key, value):
+            return f"{key:<9} {value}"
+
         info_lines = [
-            f"Formula: {molecule.molecular_formula()}",
-            f"Weight:  {molecule.molecular_weight():.2f} Da",
-            f"Atoms:   {len(molecule.atoms)}",
-            f"Bonds:   {len(molecule.bonds)}",
-            f"Charge:  {molecule.total_charge()}",
-            f"Rings:   {len(molecule.find_rings())}",
+            _row("Formula", molecule.molecular_formula()),
+            _row("Weight",  f"{molecule.molecular_weight():.2f} Da"),
+            _row("Atoms",   str(len(molecule.atoms))),
+            _row("Bonds",   str(len(molecule.bonds))),
+            _row("Charge",  str(molecule.total_charge())),
+            _row("Rings",   str(len(molecule.find_rings()))),
         ]
 
-        charges = [a.partial_charge for a in molecule.atoms if a.partial_charge != 0]
+        charges = [a.partial_charge for a in molecule.atoms
+                   if a.partial_charge != 0]
         if charges:
-            info_lines.append(f"Q range: {min(charges):.3f} to {max(charges):.3f}")
+            info_lines.append(
+                _row("Q range",
+                     f"{min(charges):+.3f}  to  {max(charges):+.3f}")
+            )
 
         self.info_text.setPlainText("\n".join(info_lines))
 
@@ -355,26 +431,34 @@ class InputPanel(QWidget):
         dpi = self.dpi_spin.value()
         self.export_image_requested.emit(dpi, True)  # Always white background
 
-    def _make_slider(self, parent_layout, label_text, min_val, max_val, default, style, callback):
-        """Create a labeled slider row. Returns (slider, value_label)."""
+    def _make_slider(self, parent_layout, label_text, min_val, max_val,
+                     default, style, callback):
+        """
+        Create a labelled slider row:   LABEL  [slider]  VALUE
+
+        The slider and its label / value rely on the global theme —
+        no inline stylesheets are applied so live theme switching
+        picks up colour changes automatically.
+        """
         row = QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(10)
+        row.setContentsMargins(0, 0, 0, 0)
 
         label = QLabel(label_text)
-        label.setFixedWidth(52)
-        label.setStyleSheet(f"font-size: 12px; color: {COLORS['text_secondary']};")
+        label.setObjectName("labelMuted")
+        label.setFixedWidth(44)
         row.addWidget(label)
 
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(min_val, max_val)
         slider.setValue(default)
-        slider.setStyleSheet(style)
         row.addWidget(slider, 1)
 
         val_label = QLabel(f"{default}%")
-        val_label.setFixedWidth(36)
-        val_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        val_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+        val_label.setObjectName("labelData")
+        val_label.setFixedWidth(38)
+        val_label.setAlignment(Qt.AlignmentFlag.AlignRight |
+                               Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(val_label)
 
         slider.valueChanged.connect(lambda v: val_label.setText(f"{v}%"))
