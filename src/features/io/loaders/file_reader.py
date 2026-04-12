@@ -181,7 +181,7 @@ def read_mol2(filepath_or_string, is_string=False):
             mol_name = lines[mol_start + 1].strip()
 
     mol = Molecule(name=mol_name)
-    mol.properties['source'] = 'file'
+    mol.properties['source'] = 'mol2'
 
     # Parse ATOM section
     if 'ATOM' not in sections:
