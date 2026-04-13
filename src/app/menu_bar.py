@@ -63,6 +63,12 @@ def _build_file_menu(window, menu_bar):
     file_menu.addAction(close_action)
     window._close_action = close_action
 
+    print_preview_action = QAction("Print Pre&view...", window)
+    print_preview_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+    print_preview_action.triggered.connect(window._print_preview)
+    file_menu.addAction(print_preview_action)
+    window._print_preview_action = print_preview_action
+
     print_action = QAction("&Print...", window)
     print_action.setShortcut(QKeySequence("Ctrl+P"))
     print_action.triggered.connect(window._print_views)

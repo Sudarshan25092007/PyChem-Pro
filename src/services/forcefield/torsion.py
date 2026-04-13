@@ -28,6 +28,12 @@ class TorsionCalculator:
     def energy(self, coords, torsions):
         total = 0.0
         for i, j, k, l, V1, V2, V3 in torsions:
+            # Ensure parameters are valid numbers
+            V1 = float(V1) if V1 is not None else 0.0
+            V2 = float(V2) if V2 is not None else 0.0
+            V3 = float(V3) if V3 is not None else 0.0
+            if V1 == 0.0 and V2 == 0.0 and V3 == 0.0:
+                continue  # Skip torsions with no parameters
             phi = self._compute_dihedral(coords[i], coords[j], coords[k], coords[l])
             total += 0.5 * (
                 V1 * (1 - np.cos(phi)) +
@@ -39,6 +45,12 @@ class TorsionCalculator:
     def gradient(self, coords, torsions):
         grad = np.zeros_like(coords, dtype=np.float64)
         for i, j, k, l, V1, V2, V3 in torsions:
+            # Ensure parameters are valid numbers
+            V1 = float(V1) if V1 is not None else 0.0
+            V2 = float(V2) if V2 is not None else 0.0
+            V3 = float(V3) if V3 is not None else 0.0
+            if V1 == 0.0 and V2 == 0.0 and V3 == 0.0:
+                continue  # Skip torsions with no parameters
             phi = self._compute_dihedral(coords[i], coords[j], coords[k], coords[l])
             dE_dphi = 0.5 * (
                 V1 * np.sin(phi) +
@@ -101,4 +113,16 @@ class TorsionCalculator:
         sym_l = mol.atoms[l].symbol
         type_j = f"{mol.atoms[j].symbol}_{mol.atoms[j].hybridization or 'sp3'}"
         type_k = f"{mol.atoms[k].symbol}_{mol.atoms[k].hybridization or 'sp3'}"
-        return get_torsion_params(sym_i, type_j, type_k, sym_l)
+        params = get_torsion_params(sym_i, type_j, type_k, sym_l)
+        # Ensure we always return a valid 3-tuple of floats
+        if params is None or not isinstance(params, (list, tuple)) or len(params) != 3:
+            return (0.0, 0.0, 0.0)
+        # Validate each parameter is a number
+        V1, V2, V3 = params
+        try:
+            V1 = float(V1) if V1 is not None else 0.0
+            V2 = float(V2) if V2 is not None else 0.0
+            V3 = float(V3) if V3 is not None else 0.0
+        except (TypeError, ValueError):
+            return (0.0, 0.0, 0.0)
+        return (V1, V2, V3)

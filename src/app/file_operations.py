@@ -179,6 +179,223 @@ def export_image(window, dpi, white_bg):
 
 # ── Print ────────────────────────────────────────────────────────
 
+def _render_print_content(window, painter, page_rect, is_preview=False):
+    """
+    Render the print content (2D and 3D views) to a QPainter.
+    
+    Args:
+        window: MainWindow instance
+        painter: QPainter to render to
+        page_rect: QRectF of the printable area
+        is_preview: If True, add a watermark indicating preview mode
+    """
+    from PySide6.QtGui import QImage, QColor, QFont, QPainter
+    from PySide6.QtCore import Qt, QRectF
+    
+    page_w = int(page_rect.width())
+    page_h = int(page_rect.height())
+    margin = int(min(page_w, page_h) * 0.03)
+
+    # Split page into top (2D) and bottom (3D) halves
+    half_h = (page_h - 3 * margin) // 2
+    top_rect = QRectF(margin, margin, page_w - 2 * margin, half_h)
+    bot_rect = QRectF(margin, margin * 2 + half_h,
+                      page_w - 2 * margin, half_h)
+
+    # Render each viewer into its own QImage
+    def _render_viewer(viewer, width, height, viewer_name="viewer"):
+        img = QImage(int(width), int(height),
+                     QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(QColor(255, 255, 255))
+        p = QPainter(img)
+        try:
+            if hasattr(viewer, '_render'):
+                # Both 3D and 2D viewers have _render method
+                # 3D: _render(painter, w, h, is_export, scale)
+                # 2D: _render(painter, w, h)
+                old_bg = getattr(viewer, 'bg_color', None)
+                if old_bg is not None:
+                    viewer.bg_color = QColor(255, 255, 255)
+                
+                # Check if 2D or 3D viewer based on method signature
+                import inspect
+                sig = inspect.signature(viewer._render)
+                params = list(sig.parameters.keys())
+                
+                if 'is_export' in params:
+                    # 3D viewer
+                    viewer._render(p, int(width), int(height),
+                                   is_export=True, export_scale=1.0)
+                else:
+                    # 2D viewer - check if it has coordinates
+                    if hasattr(viewer, 'coords_2d') and viewer.coords_2d:
+                        # Temporarily adjust scale/offset for print dimensions
+                        _saved_scale = viewer._scale
+                        _saved_ox = viewer._offset_x
+                        _saved_oy = viewer._offset_y
+                        try:
+                            # Compute fit for print dimensions
+                            coords = viewer.coords_2d
+                            visible = set(coords.keys())
+                            xs = [c[0] for c in coords.values() if c[0] is not None]
+                            ys = [c[1] for c in coords.values() if c[1] is not None]
+                            if xs and ys:
+                                min_x, max_x = min(xs), max(xs)
+                                min_y, max_y = min(ys), max(ys)
+                                span_x = max_x - min_x or 1
+                                span_y = max_y - min_y or 1
+                                cx = (min_x + max_x) / 2
+                                cy = (min_y + max_y) / 2
+                                margin = 40
+                                scale_x = (width - margin * 2) / span_x
+                                scale_y = (height - margin * 2) / span_y
+                                viewer._scale = min(scale_x, scale_y, 80)
+                                viewer._offset_x = width / 2 - cx * viewer._scale
+                                viewer._offset_y = height / 2 + cy * viewer._scale
+                            # Render with is_export=True
+                            viewer._render(p, int(width), int(height), is_export=True, export_scale=1.0)
+                        finally:
+                            # Restore original view settings
+                            viewer._scale = _saved_scale
+                            viewer._offset_x = _saved_ox
+                            viewer._offset_y = _saved_oy
+                    else:
+                        # Draw placeholder for empty 2D view
+                        p.setPen(QColor(150, 150, 150))
+                        font = QFont("Arial", 12)
+                        p.setFont(font)
+                        p.drawText(10, int(height/2), "2D view not available")
+                
+                if old_bg is not None:
+                    viewer.bg_color = old_bg
+            else:
+                # Fallback: widget's default render
+                viewer.render(p)
+        except Exception as e:
+            print(f"[PRINT RENDER ERROR] {viewer_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Draw error indicator on image
+            p.setPen(QColor(255, 0, 0))
+            font = QFont("Arial", 10)
+            p.setFont(font)
+            p.drawText(10, 20, f"Render error: {str(e)[:50]}")
+        finally:
+            p.end()
+        return img
+
+    # Render 2D
+    v2d = window.viewer_2d
+    img_2d = _render_viewer(v2d, top_rect.width(), top_rect.height(), "2D")
+
+    # Render 3D
+    v3d = window.viewer_3d
+    img_3d = _render_viewer(v3d, bot_rect.width(), bot_rect.height(), "3D")
+
+    # Draw headers
+    title_font = QFont("Helvetica", 14)
+    title_font.setBold(True)
+    painter.setFont(title_font)
+    painter.setPen(QColor(0, 0, 0))
+
+    mol_name = getattr(window.molecule, 'name', None) or 'Molecule'
+    try:
+        mol_formula = window.molecule.molecular_formula()
+    except:
+        mol_formula = "?"
+    num_atoms = getattr(window.molecule, 'num_atoms', 0)
+    num_bonds = getattr(window.molecule, 'num_bonds', 0)
+    
+    header_text = (
+        f"PyChem -- {mol_name}  |  "
+        f"{mol_formula}  |  "
+        f"{num_atoms} atoms, "
+        f"{num_bonds} bonds"
+    )
+    painter.drawText(QRectF(margin, margin * 0.25,
+                             page_w - 2 * margin, margin * 0.7),
+                      int(Qt.AlignmentFlag.AlignLeft |
+                          Qt.AlignmentFlag.AlignVCenter),
+                      header_text)
+
+    # Draw labels
+    label_font = QFont("Helvetica", 10)
+    label_font.setBold(True)
+    painter.setFont(label_font)
+    painter.drawText(QRectF(margin, top_rect.y() - margin * 0.6,
+                             page_w - 2 * margin, margin * 0.6),
+                      int(Qt.AlignmentFlag.AlignLeft),
+                      "2D View")
+    painter.drawText(QRectF(margin, bot_rect.y() - margin * 0.6,
+                             page_w - 2 * margin, margin * 0.6),
+                      int(Qt.AlignmentFlag.AlignLeft),
+                      "3D View")
+
+    # Draw the two images into their respective halves
+    painter.drawImage(top_rect, img_2d)
+    painter.drawImage(bot_rect, img_3d)
+    
+    # Add preview watermark if in preview mode
+    if is_preview:
+        watermark_font = QFont("Helvetica", 48)
+        watermark_font.setBold(True)
+        painter.setFont(watermark_font)
+        painter.setPen(QColor(200, 200, 200, 100))  # Semi-transparent gray
+        painter.drawText(page_rect, int(Qt.AlignmentFlag.AlignCenter), "PREVIEW")
+
+
+def print_preview(window):
+    """
+    Show a print preview dialog for the 2D and 3D views.
+    
+    This allows users to see how the print will look before sending to printer.
+    """
+    if not window.molecule:
+        window.status_bar.showMessage("No molecule to preview")
+        return
+
+    try:
+        from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+        from PySide6.QtGui import QPainter
+    except ImportError:
+        QMessageBox.critical(
+            window, "Print Preview Error",
+            "Qt print support is not available. Please install PySide6 with "
+            "print support (PySide6 >= 6.5 normally includes it)."
+        )
+        return
+
+    # Configure printer with sensible defaults
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setDocName(f"PyChem - {window.molecule.name or 'molecule'}")
+
+    # Create preview dialog
+    preview_dialog = QPrintPreviewDialog(printer, window)
+    preview_dialog.setWindowTitle("Print Preview - 2D + 3D Views")
+    
+    # Connect the paint requested signal
+    def handle_paint_request(printer_obj):
+        from PySide6.QtPrintSupport import QPrinter
+        from PySide6.QtGui import QFont, QColor, QPainter
+        painter = QPainter(printer_obj)
+        try:
+            page_rect = printer_obj.pageRect(QPrinter.Unit.DevicePixel)
+            _render_print_content(window, painter, page_rect, is_preview=True)
+        except Exception as e:
+            print(f"[PRINT PREVIEW ERROR] {e}")
+            import traceback
+            traceback.print_exc()
+            # Draw error message on page
+            painter.setPen(QColor(255, 0, 0))
+            painter.setFont(QFont("Arial", 12))
+            painter.drawText(100, 100, f"Preview Error: {str(e)}")
+        finally:
+            painter.end()
+    
+    preview_dialog.paintRequested.connect(handle_paint_request)
+    preview_dialog.exec()
+
+
 def print_views(window):
     """
     Print both 2D and 3D views of the current molecule to a single page.
@@ -195,8 +412,7 @@ def print_views(window):
 
     try:
         from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-        from PySide6.QtGui import QPainter, QImage, QColor
-        from PySide6.QtCore import Qt, QRectF
+        from PySide6.QtGui import QPainter
     except ImportError:
         QMessageBox.critical(
             window, "Print Error",
@@ -217,87 +433,11 @@ def print_views(window):
     try:
         # Get printable area in device pixels
         page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
-        page_w = int(page_rect.width())
-        page_h = int(page_rect.height())
-        margin = int(min(page_w, page_h) * 0.03)
-
-        # Split page into top (2D) and bottom (3D) halves
-        half_h = (page_h - 3 * margin) // 2
-        top_rect = QRectF(margin, margin, page_w - 2 * margin, half_h)
-        bot_rect = QRectF(margin, margin * 2 + half_h,
-                          page_w - 2 * margin, half_h)
-
-        # Render each viewer into its own QImage at roughly the target size,
-        # then let the QPainter scale it into the page rect while preserving
-        # aspect ratio. This gives crisp output regardless of screen DPI.
-        def _render_viewer(viewer, width, height):
-            img = QImage(int(width), int(height),
-                         QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(QColor(255, 255, 255))
-            p = QPainter(img)
-            try:
-                if hasattr(viewer, '_render'):
-                    # MolViewer3D exposes _render(painter, w, h, is_export, scale)
-                    old_bg = getattr(viewer, 'bg_color', None)
-                    if old_bg is not None:
-                        viewer.bg_color = QColor(255, 255, 255)
-                    viewer._render(p, int(width), int(height),
-                                   is_export=True, export_scale=1.0)
-                    if old_bg is not None:
-                        viewer.bg_color = old_bg
-                else:
-                    # MolViewer2D: use its native paintEvent via render()
-                    viewer.render(p)
-            finally:
-                p.end()
-            return img
-
-        # Render 2D
-        v2d = window.viewer_2d
-        img_2d = _render_viewer(v2d, top_rect.width(), top_rect.height())
-
-        # Render 3D
-        v3d = window.viewer_3d
-        img_3d = _render_viewer(v3d, bot_rect.width(), bot_rect.height())
-
+        
         # Paint onto the printer
         page_painter = QPainter(printer)
         try:
-            # Draw headers
-            from src.shared.qt_compat import QFont
-            title_font = QFont("Helvetica", 14)
-            title_font.setBold(True)
-            page_painter.setFont(title_font)
-            page_painter.setPen(QColor(0, 0, 0))
-
-            header_text = (
-                f"PyChem -- {window.molecule.name or 'Molecule'}  |  "
-                f"{window.molecule.molecular_formula()}  |  "
-                f"{window.molecule.num_atoms} atoms, "
-                f"{window.molecule.num_bonds} bonds"
-            )
-            page_painter.drawText(QRectF(margin, margin * 0.25,
-                                         page_w - 2 * margin, margin * 0.7),
-                                  int(Qt.AlignmentFlag.AlignLeft |
-                                      Qt.AlignmentFlag.AlignVCenter),
-                                  header_text)
-
-            # Draw labels
-            label_font = QFont("Helvetica", 10)
-            label_font.setBold(True)
-            page_painter.setFont(label_font)
-            page_painter.drawText(QRectF(margin, top_rect.y() - margin * 0.6,
-                                         page_w - 2 * margin, margin * 0.6),
-                                  int(Qt.AlignmentFlag.AlignLeft),
-                                  "2D View")
-            page_painter.drawText(QRectF(margin, bot_rect.y() - margin * 0.6,
-                                         page_w - 2 * margin, margin * 0.6),
-                                  int(Qt.AlignmentFlag.AlignLeft),
-                                  "3D View")
-
-            # Draw the two images into their respective halves, preserving AR
-            page_painter.drawImage(top_rect, img_2d)
-            page_painter.drawImage(bot_rect, img_3d)
+            _render_print_content(window, page_painter, page_rect, is_preview=False)
         finally:
             page_painter.end()
 

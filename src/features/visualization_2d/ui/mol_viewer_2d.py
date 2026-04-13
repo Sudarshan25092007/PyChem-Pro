@@ -116,12 +116,14 @@ class MolViewer2D(QWidget):
         """
         Set the molecule and its 2D coordinates.
         If coordinates are not provided, they are generated using the
-        appropriate engine based on the molecule's source.
+        SMILES-based OASA approach (mol -> SMILES -> oasa -> 2D coordinates).
+        
+        This provides a unified, high-quality 2D layout for all molecule sources
+        (SMILES, MOL, SDF, MOL2) by leveraging OASA's robust SMILES parser
+        which generates professional 2D coordinates during parsing.
         """
         self.molecule = molecule
         self.selected_atoms = set()
-
-        source = molecule.properties.get('source', 'unknown') if molecule else 'unknown'
 
         if coords_2d:
             if _DEBUG:
@@ -131,18 +133,13 @@ class MolViewer2D(QWidget):
             # Check if coordinates already exist on atoms (e.g. from parser)
             has_coords = all(hasattr(a, 'x2d') and a.x2d is not None for a in molecule.atoms if a.symbol != 'H')
 
-            if source == 'smiles':
-                from src.features.layout_2d.generators.coordgen2d_smiles import CoordinateGenerator2DSMILES
-                if _DEBUG:
-                    print("[DEBUG] Using Specialized SMILES Layout Engine...")
-                generator = CoordinateGenerator2DSMILES(molecule, force_regenerate=(not has_coords))
-                self.coords_2d = generator.generate()
-            else:
-                from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
-                if _DEBUG:
-                    print("[DEBUG] Using General Structure Layout Engine...")
-                generator = CoordinateGenerator2D(molecule, force_regenerate=(not has_coords))
-                self.coords_2d = generator.generate()
+            # Use SMILES-based OASA coordinate generation for ALL molecules
+            # This implements the flow: mol -> SMILES -> oasa -> 2D coordinates
+            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+            if _DEBUG:
+                print("[DEBUG] Using SMILES-based OASA Layout Engine (mol -> SMILES -> oasa -> 2D)...")
+            generator = CoordinateGenerator2DSMILES(molecule, force_regenerate=(not has_coords))
+            self.coords_2d = generator.generate()
 
             # Ensure ring perception is up-to-date for correct double bond placement
             molecule.find_rings()

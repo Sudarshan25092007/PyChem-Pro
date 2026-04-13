@@ -29,6 +29,11 @@ def _vdw_energy_chunk(args):
     coords, pairs_chunk = args
     energy = 0.0
     for i, j, sigma, epsilon in pairs_chunk:
+        # Ensure parameters are valid
+        sigma = float(sigma) if sigma is not None else 3.4
+        epsilon = float(epsilon) if epsilon is not None else 0.1
+        if epsilon <= 0:
+            continue
         r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
         if r < sigma * 1.5:
             ratio = sigma / r
@@ -41,6 +46,11 @@ def _vdw_gradient_chunk(args):
     coords, pairs_chunk, n_atoms = args
     grad = np.zeros((n_atoms, 3))
     for i, j, sigma, epsilon in pairs_chunk:
+        # Ensure parameters are valid
+        sigma = float(sigma) if sigma is not None else 3.4
+        epsilon = float(epsilon) if epsilon is not None else 0.1
+        if epsilon <= 0:
+            continue
         diff = coords[i] - coords[j]
         r = np.linalg.norm(diff) + 1e-8
         if r < sigma * 1.5:
@@ -80,9 +90,12 @@ class MMFF94Service:
         """Ensure every atom has numeric 3D coords before optimization.
 
         Priority: keep existing 3D → else use cached OASA 2D (x2d/y2d) →
-        else generate 2D layout now → last resort, origin. The z-axis is
-        left at 0.0 here; optimize_geometry adds a small random z spread
-        so angle/torsion gradients aren't degenerate in the flat plane.
+        else generate 2D layout now → last resort, origin.
+        
+        The z-coordinate is intelligently seeded based on atom properties
+        (hybridization, atom type) and then developed during optimization.
+        This provides better starting points for 3D structure generation
+        compared to flat 2D layouts.
         """
         needs_seed = any(
             a.x is None or a.y is None or a.z is None for a in mol.atoms
@@ -96,27 +109,91 @@ class MMFF94Service:
         )
         if not have_2d:
             try:
-                from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
-                CoordinateGenerator2D(mol, force_regenerate=False).generate()
+                # Use the SMILES-based OASA coordinate generator for better 2D layouts
+                from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+                CoordinateGenerator2DSMILES(mol, force_regenerate=True).generate()
             except Exception:
-                pass  # fall through to origin below
+                try:
+                    # Fallback to standard generator
+                    from src.features.layout_2d.generators.coordgen2d import CoordinateGenerator2D
+                    CoordinateGenerator2D(mol, force_regenerate=False).generate()
+                except Exception:
+                    pass  # fall through to origin below
 
+        # Assign hybridization for z-coordinate seeding
+        mol.assign_hybridization()
+        
         for a in mol.atoms:
+            # Use 2D coordinates for x and y (from OASA)
             if a.x is None:
                 a.x = float(a.x2d) if getattr(a, 'x2d', None) is not None else 0.0
             if a.y is None:
                 a.y = float(a.y2d) if getattr(a, 'y2d', None) is not None else 0.0
+            
+            # Intelligently seed z-coordinate based on atom properties
+            # This gives the optimizer a better starting point than flat z=0
             if a.z is None:
-                a.z = float(getattr(a, 'z2d', None) or 0.0)
+                z_seed = self._compute_initial_z(a, mol)
+                a.z = z_seed
+
+    def _compute_initial_z(self, atom, mol) -> float:
+        """Compute an intelligent initial z-coordinate for an atom.
+        
+        Uses atom properties to create a non-flat initial conformation:
+        - sp3 atoms get small random z (tetrahedral hint)
+        - sp2 atoms stay near plane (planar hint)
+        - sp atoms stay near plane (linear hint)
+        - Heavy atoms get slightly more variation than hydrogens
+        
+        This seeds the 3D structure with hints about preferred geometry
+        that the MMFF94 optimizer will then develop further.
+        """
+        import random
+        random.seed(atom.index)  # Deterministic for reproducibility
+        
+        hyb = getattr(atom, 'hybridization', 'sp3') or 'sp3'
+        symbol = atom.symbol
+        
+        # Base z variation by hybridization
+        if hyb == 'sp':
+            # Linear - stay near plane
+            z_base = random.uniform(-0.1, 0.1)
+        elif hyb == 'sp2':
+            # Planar - small deviation from plane
+            z_base = random.uniform(-0.2, 0.2)
+        else:  # sp3
+            # Tetrahedral - allow more variation
+            z_base = random.uniform(-0.5, 0.5)
+        
+        # Adjust based on atom type
+        if symbol == 'H':
+            # Hydrogens closer to plane (they extend from heavy atoms)
+            z_scale = 0.3
+        elif symbol in ('C', 'N', 'O'):
+            # Common organic atoms - standard variation
+            z_scale = 1.0
+        elif symbol in ('S', 'P'):
+            # Larger atoms - slightly more variation
+            z_scale = 1.2
+        else:
+            # Other atoms - moderate variation
+            z_scale = 0.8
+        
+        return z_base * z_scale
 
     def assign_charges(self, mol: Molecule) -> None:
         for atom in mol.atoms:
             atom.partial_charge = 0.0
-            atom.partial_charge += atom.formal_charge
+            atom.partial_charge += atom.formal_charge if atom.formal_charge is not None else 0.0
         for bond in mol.bonds:
             a1 = mol.atoms[bond.begin_atom_idx]
             a2 = mol.atoms[bond.end_atom_idx]
             bci = get_bci_charge(a1.symbol, a2.symbol)
+            # Ensure bci is a valid number
+            try:
+                bci = float(bci) if bci is not None else 0.0
+            except (TypeError, ValueError):
+                bci = 0.0
             a1.partial_charge += bci
             a2.partial_charge -= bci
 
@@ -152,8 +229,9 @@ class MMFF94Service:
 
         # 5. Get coordinates
         coords = np.array([[a.x, a.y, a.z] for a in mol.atoms], dtype=np.float64)
-        # Add small Z perturbation if flat
-        if np.allclose(coords[:, 2], 0.0):
+        # Fallback: add small Z perturbation if coordinates are still flat
+        # (should rarely happen with intelligent z-seeding in _seed_coords_from_2d)
+        if np.allclose(coords[:, 2], 0.0, atol=0.01):
             coords[:, 2] += np.random.uniform(-0.1, 0.1, len(coords))
 
         # 6. Optimize
@@ -195,6 +273,11 @@ class MMFF94Service:
     def _bond_energy(self, coords, bond_list):
         energy = 0.0
         for i, j, r0, kb in bond_list:
+            # Ensure parameters are valid
+            r0 = float(r0) if r0 is not None else 1.5
+            kb = float(kb) if kb is not None else 4.0
+            if kb <= 0:
+                continue
             r = np.linalg.norm(coords[i] - coords[j])
             energy += 71.94 / 2.0 * kb * (r - r0) ** 2
         return energy
@@ -202,6 +285,11 @@ class MMFF94Service:
     def _vdw_energy_sequential(self, coords, vdw_pairs):
         energy = 0.0
         for i, j, sigma, epsilon in vdw_pairs:
+            # Ensure parameters are valid
+            sigma = float(sigma) if sigma is not None else 3.4
+            epsilon = float(epsilon) if epsilon is not None else 0.1
+            if epsilon <= 0:
+                continue
             r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
             if r < sigma * 1.5:
                 ratio = sigma / r
@@ -231,6 +319,11 @@ class MMFF94Service:
     def _bond_gradient(self, coords, bond_list):
         grad = np.zeros_like(coords)
         for i, j, r0, kb in bond_list:
+            # Ensure parameters are valid
+            r0 = float(r0) if r0 is not None else 1.5
+            kb = float(kb) if kb is not None else 4.0
+            if kb <= 0:
+                continue
             diff = coords[i] - coords[j]
             r = np.linalg.norm(diff) + 1e-8
             force = 71.94 * kb * (r - r0) / r
@@ -241,6 +334,11 @@ class MMFF94Service:
     def _vdw_gradient_sequential(self, coords, vdw_pairs):
         grad = np.zeros_like(coords)
         for i, j, sigma, epsilon in vdw_pairs:
+            # Ensure parameters are valid
+            sigma = float(sigma) if sigma is not None else 3.4
+            epsilon = float(epsilon) if epsilon is not None else 0.1
+            if epsilon <= 0:
+                continue
             diff = coords[i] - coords[j]
             r = np.linalg.norm(diff) + 1e-8
             if r < sigma * 1.5:
@@ -274,7 +372,17 @@ class MMFF94Service:
             i, j = bond.begin_atom_idx, bond.end_atom_idx
             sym1 = mol.atoms[i].symbol
             sym2 = mol.atoms[j].symbol
-            r0, kb = get_bond_params(sym1, sym2, bond.order)
+            params = get_bond_params(sym1, sym2, bond.order)
+            # Ensure valid parameters
+            if params is None or not isinstance(params, (list, tuple)) or len(params) != 2:
+                r0, kb = 1.5, 4.0  # Default bond parameters
+            else:
+                r0, kb = params
+                try:
+                    r0 = float(r0) if r0 is not None else 1.5
+                    kb = float(kb) if kb is not None else 4.0
+                except (TypeError, ValueError):
+                    r0, kb = 1.5, 4.0
             bond_list.append((i, j, r0, kb))
         return bond_list
 
@@ -299,10 +407,29 @@ class MMFF94Service:
         for i in range(n):
             for j in range(i + 1, n):
                 if (i, j) not in excluded:
-                    r1, e1 = get_vdw_params(mol.atoms[i].symbol)
-                    r2, e2 = get_vdw_params(mol.atoms[j].symbol)
+                    params1 = get_vdw_params(mol.atoms[i].symbol)
+                    params2 = get_vdw_params(mol.atoms[j].symbol)
+                    # Ensure valid parameters
+                    if params1 is None or not isinstance(params1, (list, tuple)) or len(params1) != 2:
+                        r1, e1 = 1.7, 0.1  # Default carbon VdW
+                    else:
+                        r1, e1 = params1
+                        try:
+                            r1 = float(r1) if r1 is not None else 1.7
+                            e1 = float(e1) if e1 is not None else 0.1
+                        except (TypeError, ValueError):
+                            r1, e1 = 1.7, 0.1
+                    if params2 is None or not isinstance(params2, (list, tuple)) or len(params2) != 2:
+                        r2, e2 = 1.7, 0.1
+                    else:
+                        r2, e2 = params2
+                        try:
+                            r2 = float(r2) if r2 is not None else 1.7
+                            e2 = float(e2) if e2 is not None else 0.1
+                        except (TypeError, ValueError):
+                            r2, e2 = 1.7, 0.1
                     sigma = r1 + r2
-                    epsilon = (e1 * e2) ** 0.5
+                    epsilon = (e1 * e2) ** 0.5 if e1 > 0 and e2 > 0 else 0.0
                     vdw_pairs.append((i, j, sigma, epsilon))
         return vdw_pairs
 

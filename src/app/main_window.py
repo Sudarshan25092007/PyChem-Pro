@@ -473,6 +473,9 @@ class MainWindow(QMainWindow):
     def _print_views(self):
         _file_ops.print_views(self)
 
+    def _print_preview(self):
+        _file_ops.print_preview(self)
+
     # ── Theme ────────────────────────────────────────────────────
 
     def _apply_plugin_dock_theme(self):
