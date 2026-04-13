@@ -25,7 +25,7 @@ import math
 from src.shared.qt_compat import QWidget, Qt, QPointF, QRectF, Signal
 from src.shared.qt_compat import (
     QPainter, QColor, QPen, QBrush, QFont, QFontMetrics,
-    QImage, QPainterPath, QPolygonF
+    QImage, QPainterPath, QPolygonF, QMenu, QAction
 )
 from src.shared.ui.theme import COLORS
 
@@ -52,11 +52,25 @@ class MolViewer2D(QWidget):
     mouse-release are added to ``selected_atoms``.  A plain left-click
     on empty space clears the selection.
 
+    Atom Dragging
+    -------------
+    **Left-click + drag** on a selected atom to reposition it.
+    The atom follows the mouse cursor, and connected bonds stretch
+    to maintain connectivity. This allows interactive adjustment
+    of the 2D layout without breaking molecular structure.
+
     Deletion
     --------
     Pressing the **Delete** key while atoms are selected emits
     ``delete_requested`` so the main window can remove those atoms
     from the domain model and refresh both viewers.
+
+    Context Menu (Right-Click)
+    --------------------------
+    Right-clicking in the 2D view opens a context menu with:
+    
+    - **Fit to Screen** — Auto-fit molecule to view ('F' key)
+    - **Reset View** — Reset zoom and pan to default ('R' key)
 
     Keyboard Shortcuts
     ------------------
@@ -104,6 +118,11 @@ class MolViewer2D(QWidget):
         self._sel_rect_origin = None   # QPointF or None
         self._sel_rect_end = None      # QPointF or None
         self._is_selecting = False     # True while Shift+left-drag is active
+
+        # Atom drag state for interactive repositioning
+        self._is_dragging_atom = False  # True while dragging a selected atom
+        self._dragged_atom_idx = None   # Index of atom being dragged
+        self._drag_start_pos = None     # Starting screen position of drag
 
         # Export state (set during export_image calls)
         self._original_scale = None    # Pre-export scale for font sizing
@@ -541,7 +560,7 @@ class MolViewer2D(QWidget):
     # ─── Mouse Interaction ────────────────────────────────────────
 
     def mousePressEvent(self, event):
-        """Handle mouse press: start pan or rubber-band selection."""
+        """Handle mouse press: start pan, rubber-band selection, or atom drag."""
         self._last_mouse_pos = event.position()
         self._mouse_button = event.button()
 
@@ -551,10 +570,47 @@ class MolViewer2D(QWidget):
             self._is_selecting = True
             self._sel_rect_origin = event.position()
             self._sel_rect_end = event.position()
+            return
+
+        # Left-click on a selected atom starts drag mode
+        if event.button() == Qt.MouseButton.LeftButton:
+            atom_idx = self._hit_test_2d(event.position())
+            if atom_idx >= 0 and atom_idx in self.selected_atoms:
+                # Start dragging the selected atom
+                self._is_dragging_atom = True
+                self._dragged_atom_idx = atom_idx
+                self._drag_start_pos = event.position()
+                if _DEBUG:
+                    print(f"[DEBUG 2D] Started dragging atom {atom_idx}")
 
     def mouseMoveEvent(self, event):
-        """Handle mouse move: pan, update rubber-band, or hover."""
-        # Hover detection (always active)
+        """Handle mouse move: pan, atom drag, update rubber-band, or hover."""
+        # Atom dragging - update atom position in molecule coordinates
+        if self._is_dragging_atom and self._dragged_atom_idx is not None:
+            if self._dragged_atom_idx in self.coords_2d:
+                # Convert screen delta to molecule coordinates
+                dx_screen = event.position().x() - self._last_mouse_pos.x()
+                dy_screen = event.position().y() - self._last_mouse_pos.y()
+                
+                # Convert screen pixels to molecule units
+                dx_mol = dx_screen / self._scale
+                dy_mol = -dy_screen / self._scale  # Y is inverted in screen coords
+                
+                # Update atom position
+                x, y = self.coords_2d[self._dragged_atom_idx]
+                self.coords_2d[self._dragged_atom_idx] = [x + dx_mol, y + dy_mol]
+                
+                # Update atom's cached coordinates
+                atom = self.molecule.get_atom(self._dragged_atom_idx)
+                if atom:
+                    atom.x2d = x + dx_mol
+                    atom.y2d = y + dy_mol
+                
+                self._last_mouse_pos = event.position()
+                self.update()
+            return
+
+        # Hover detection (only when not dragging)
         if self._last_mouse_pos is None:
             old_hover = self._hovered_atom
             self._hovered_atom = self._hit_test_2d(event.position())
@@ -568,6 +624,7 @@ class MolViewer2D(QWidget):
             self.update()
             return
 
+        # Normal pan operation
         dx = event.position().x() - self._last_mouse_pos.x()
         dy = event.position().y() - self._last_mouse_pos.y()
 
@@ -579,7 +636,19 @@ class MolViewer2D(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
-        """Handle mouse release: commit selection rect or deselect on click."""
+        """Handle mouse release: end drag, commit selection, or deselect on click."""
+        # --- Finish atom dragging ---
+        if self._is_dragging_atom and event.button() == Qt.MouseButton.LeftButton:
+            if _DEBUG:
+                print(f"[DEBUG 2D] Finished dragging atom {self._dragged_atom_idx}")
+            self._is_dragging_atom = False
+            self._dragged_atom_idx = None
+            self._drag_start_pos = None
+            self._last_mouse_pos = None
+            self._mouse_button = None
+            self.update()
+            return
+
         # --- Finish rubber-band selection ---
         if self._is_selecting and event.button() == Qt.MouseButton.LeftButton:
             self._commit_rubber_band_selection()
@@ -618,6 +687,38 @@ class MolViewer2D(QWidget):
 
         self._last_mouse_pos = None
         self._mouse_button = None
+
+    def contextMenuEvent(self, event):
+        """
+        Handle right-click context menu.
+        
+        Provides options for 2D view manipulation:
+        - Fit to screen: Auto-fit molecule to view
+        - Reset view: Reset zoom and pan to default
+        """
+        if not self.molecule or not self.coords_2d:
+            return
+        
+        menu = QMenu(self)
+        
+        # Fit to screen action
+        fit_action = QAction("Fit to Screen", self)
+        fit_action.setShortcut("F")
+        fit_action.triggered.connect(self._auto_fit)
+        menu.addAction(fit_action)
+        
+        # Reset view action
+        reset_action = QAction("Reset View", self)
+        reset_action.setShortcut("R")
+        reset_action.triggered.connect(self._reset_view)
+        menu.addAction(reset_action)
+        
+        menu.exec(event.globalPos())
+    
+    def _reset_view(self):
+        """Reset view to default state (fit + center)."""
+        self._auto_fit()
+        self.update()
 
     def wheelEvent(self, event):
         pos = event.position()
@@ -845,3 +946,276 @@ class MolViewer2D(QWidget):
         painter.setPen(QPen(QColor(200, 200, 200), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(10, 10, width - 20, height - 20)
+
+    def _optimize_2d_layout(self):
+        """
+        Optimize the 2D molecular layout using CoordinateGenerator2DSMILES.
+        
+        This method regenerates 2D coordinates using the same reliable generator
+        that is used when initially loading molecules. The CoordinateGenerator2DSMILES
+        properly handles the SMILES roundtrip and coordinate mapping.
+        
+        Returns:
+            bool: True if optimization succeeded, False otherwise
+        """
+        if not self.molecule:
+            return False
+        
+        try:
+            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+            
+            if _DEBUG:
+                print("[DEBUG 2D] Starting 2D layout optimization with CoordinateGenerator2DSMILES...")
+            
+            # Use CoordinateGenerator2DSMILES with force_regenerate=True
+            # This does the proper SMILES roundtrip and generates fresh coordinates
+            generator = CoordinateGenerator2DSMILES(self.molecule, force_regenerate=True)
+            new_coords = generator.generate()
+            
+            if not new_coords:
+                if _DEBUG:
+                    print("[DEBUG 2D] Coordinate generation failed")
+                return False
+            
+            if _DEBUG:
+                print(f"[DEBUG 2D] Generated {len(new_coords)} coordinates")
+            
+            # Update the coordinates
+            self.coords_2d = new_coords
+            
+            # Update atom cached coordinates
+            for idx, (x, y) in new_coords.items():
+                atom = self.molecule.get_atom(idx)
+                if atom:
+                    atom.x2d = x
+                    atom.y2d = y
+                    atom.z2d = 0.0
+            
+            # Auto-fit and update
+            self._auto_fit()
+            self.update()
+            
+            if _DEBUG:
+                print("[DEBUG 2D] Layout optimization complete")
+            
+            return True
+            
+        except Exception as e:
+            if _DEBUG:
+                print(f"[DEBUG 2D] Optimization error: {e}")
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def _place_explicit_hydrogens_after_opt(self):
+        """
+        Place explicit hydrogen atoms around their parent heavy atoms
+        after 2D coordinate optimization.
+        
+        This ensures H atoms (which are skipped by domain_to_oasa_mol)
+        get reasonable positions near their bonded heavy atoms.
+        """
+        import math
+        
+        placed = 0
+        BOND_LENGTH_H = 0.9  # Slightly shorter than heavy atom bonds
+        
+        for atom in self.molecule.atoms:
+            # Skip if not hydrogen
+            if atom.symbol != 'H':
+                continue
+            # Skip if already has coordinates
+            if atom.index in self.coords_2d:
+                continue
+            
+            # Find the heavy atom this H is bonded to
+            parent_idx = None
+            for bond in self.molecule.bonds:
+                if bond.begin_atom_idx == atom.index and bond.end_atom_idx in self.coords_2d:
+                    parent_idx = bond.end_atom_idx
+                    break
+                elif bond.end_atom_idx == atom.index and bond.begin_atom_idx in self.coords_2d:
+                    parent_idx = bond.begin_atom_idx
+                    break
+            
+            if parent_idx is not None:
+                px, py = self.coords_2d[parent_idx]
+                # Place H at a deterministic angle based on atom index
+                # This distributes H atoms evenly around parent
+                angle = (atom.index * 2.4) % (2 * math.pi)  # Golden angle approximation
+                self.coords_2d[atom.index] = [
+                    px + BOND_LENGTH_H * math.cos(angle),
+                    py + BOND_LENGTH_H * math.sin(angle)
+                ]
+                placed += 1
+        
+        if _DEBUG and placed > 0:
+            print(f"[DEBUG 2D] Placed {placed} explicit hydrogen atoms")
+    
+    def _fix_overlaps_with_repulsion(self):
+        """
+        Fix atom overlaps using gentle repulsion forces.
+        
+        After OASA coordinate generation, some atoms may still overlap
+        (especially in complex multi-ring systems). This method applies
+        a simple repulsion-based algorithm to push overlapping atoms apart
+        while preserving the overall layout topology.
+        
+        The algorithm:
+        1. Detects pairs of atoms that are too close (distance < threshold)
+        2. Applies gentle repulsion forces to push them apart
+        3. Runs a few iterations to resolve all overlaps
+        4. Maintains bonded atom distances to preserve structure
+        """
+        import math
+        
+        if not self.coords_2d or len(self.coords_2d) < 2:
+            return
+        
+        # Get list of bonded pairs (to preserve bond distances)
+        bonded_pairs = set()
+        for bond in self.molecule.bonds:
+            idx1, idx2 = bond.begin_atom_idx, bond.end_atom_idx
+            if idx1 in self.coords_2d and idx2 in self.coords_2d:
+                bonded_pairs.add((min(idx1, idx2), max(idx1, idx2)))
+        
+        # Minimum acceptable distance between non-bonded atoms
+        # Increased to 1.0 to ensure atoms are clearly separated (one bond length)
+        MIN_DISTANCE = 1.0  # OASA units (bond length is typically ~1.0)
+        # Repulsion strength - higher to push atoms apart more aggressively
+        REPULSION_STRENGTH = 0.25
+        # Number of iterations
+        MAX_ITERATIONS = 100
+        # Early stopping if no overlaps
+        CONVERGENCE_THRESHOLD = 0.005
+        
+        for iteration in range(MAX_ITERATIONS):
+            # Calculate repulsion forces for each atom
+            forces = {idx: [0.0, 0.0] for idx in self.coords_2d}
+            max_displacement = 0.0
+            overlaps_found = 0
+            
+            # Check all pairs
+            indices = list(self.coords_2d.keys())
+            for i in range(len(indices)):
+                for j in range(i + 1, len(indices)):
+                    idx1, idx2 = indices[i], indices[j]
+                    x1, y1 = self.coords_2d[idx1]
+                    x2, y2 = self.coords_2d[idx2]
+                    
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    dist_sq = dx * dx + dy * dy
+                    dist = math.sqrt(dist_sq)
+                    
+                    # Skip if already well-separated
+                    if dist > MIN_DISTANCE:
+                        continue
+                    
+                    # Skip bonded pairs (preserve bond geometry)
+                    if (min(idx1, idx2), max(idx1, idx2)) in bonded_pairs:
+                        continue
+                    
+                    overlaps_found += 1
+                    
+                    # Calculate repulsion (stronger when closer)
+                    if dist < 0.001:
+                        # Avoid division by zero - push in random direction
+                        angle = (idx1 + idx2) * 0.7
+                        dx = math.cos(angle)
+                        dy = math.sin(angle)
+                        dist = 0.001
+                    
+                    # Repulsion force inversely proportional to distance
+                    # Use quadratic falloff for stronger repulsion at close range
+                    overlap = MIN_DISTANCE - dist
+                    force = REPULSION_STRENGTH * overlap * (1.0 + overlap / dist)
+                    
+                    # Normalize direction
+                    fx = dx / dist * force
+                    fy = dy / dist * force
+                    
+                    # Apply forces (opposite directions)
+                    forces[idx1][0] -= fx
+                    forces[idx1][1] -= fy
+                    forces[idx2][0] += fx
+                    forces[idx2][1] += fy
+            
+            # Also apply gentle attraction to bonded pairs to maintain bond lengths
+            # This prevents the molecule from becoming too stretched
+            TARGET_BOND_LENGTH = 1.0
+            BOND_ATTRACTION_STRENGTH = 0.05
+            
+            for idx1, idx2 in bonded_pairs:
+                if idx1 not in self.coords_2d or idx2 not in self.coords_2d:
+                    continue
+                x1, y1 = self.coords_2d[idx1]
+                x2, y2 = self.coords_2d[idx2]
+                
+                dx = x2 - x1
+                dy = y2 - y1
+                dist = math.sqrt(dx * dx + dy * dy)
+                
+                if dist < 0.001:
+                    continue
+                
+                # Attraction if bond is too long, repulsion if too short
+                deviation = dist - TARGET_BOND_LENGTH
+                force = BOND_ATTRACTION_STRENGTH * deviation
+                
+                fx = dx / dist * force
+                fy = dy / dist * force
+                
+                forces[idx1][0] += fx
+                forces[idx1][1] += fy
+                forces[idx2][0] -= fx
+                forces[idx2][1] -= fy
+            
+            # Apply forces to positions
+            for idx in self.coords_2d:
+                fx, fy = forces[idx]
+                if abs(fx) > max_displacement:
+                    max_displacement = abs(fx)
+                if abs(fy) > max_displacement:
+                    max_displacement = abs(fy)
+                
+                x, y = self.coords_2d[idx]
+                self.coords_2d[idx] = [x + fx, y + fy]
+            
+            if _DEBUG and iteration % 10 == 0:
+                print(f"[DEBUG 2D] Overlap fix iter {iteration}: {overlaps_found} overlaps, max_disp={max_displacement:.4f}")
+            
+            # Check convergence
+            if max_displacement < CONVERGENCE_THRESHOLD:
+                if _DEBUG:
+                    print(f"[DEBUG 2D] Overlap fix converged at iteration {iteration}")
+                break
+        
+        if _DEBUG:
+            print(f"[DEBUG 2D] Overlap fix complete after {iteration + 1} iterations")
+    
+    def _center_coords_2d(self):
+        """
+        Center the 2D coordinates around the origin.
+        
+        This maintains consistent molecule positioning after optimization
+        by recentering the coordinate system.
+        """
+        if not self.coords_2d:
+            return
+        
+        # Calculate centroid
+        xs = [c[0] for c in self.coords_2d.values() if c[0] is not None]
+        ys = [c[1] for c in self.coords_2d.values() if c[1] is not None]
+        
+        if not xs or not ys:
+            return
+        
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        
+        # Center all coordinates
+        for idx in self.coords_2d:
+            x, y = self.coords_2d[idx]
+            if x is not None and y is not None:
+                self.coords_2d[idx] = [x - cx, y - cy]
