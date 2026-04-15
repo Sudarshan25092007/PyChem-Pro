@@ -105,8 +105,8 @@ class CoordinateGenerator2DSMILES:
         self.molecule = molecule
         self.coords = {}
         self.force_regenerate = force_regenerate
-        
-        print(f"[DEBUG SMILES] Initialized OASA-based generator for {len(molecule.atoms) if molecule else 0} atoms")
+
+        # print(f"[DEBUG SMILES] Initialized OASA-based generator for {len(molecule.atoms) if molecule else 0} atoms")  # Commented out for reduced verbosity
     
     def generate(self):
         """
@@ -123,39 +123,39 @@ class CoordinateGenerator2DSMILES:
             5. Layout refinement
         """
         if not self.molecule or len(self.molecule.atoms) == 0:
-            print("[DEBUG SMILES] No molecule or atoms to process")
+            # print("[DEBUG SMILES] No molecule or atoms to process")  # Commented out for reduced verbosity
             return {}
         
         # Step 1: Check for existing coordinates
         if not self.force_regenerate:
-            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None 
+            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None
                            for a in self.molecule.atoms if a.symbol != 'H')
             if has_coords:
-                print("[DEBUG SMILES] Using existing coordinates")
+                # print("[DEBUG SMILES] Using existing coordinates")  # Commented out for reduced verbosity
                 self.coords = {a.index: [a.x2d * self.BOND_LENGTH, a.y2d * self.BOND_LENGTH] 
                               for a in self.molecule.atoms}
                 self._center_coords()
                 return self.coords
         
         # Step 2: Enhanced molecule preprocessing for OASA
-        print("[DEBUG SMILES] Enhanced molecule preprocessing...")
+        # print("[DEBUG SMILES] Enhanced molecule preprocessing...")  # Commented out for reduced verbosity
         o_mol, atom_map = self._preprocess_molecule_for_oasa()
-        
+
         # Step 3: Pure OASA coordinate generation
-        print("[DEBUG SMILES] Pure OASA coordinate generation...")
+        # print("[DEBUG SMILES] Pure OASA coordinate generation...")  # Commented out for reduced verbosity
         self._generate_oasa_coordinates(o_mol, atom_map)
-        
+
         # Step 4: Place explicit hydrogen atoms (those skipped by domain_to_oasa_mol)
-        print(f"[DEBUG SMILES] Placing explicit hydrogen atoms... (have {len(self.coords)} coords so far)")
+        # print(f"[DEBUG SMILES] Placing explicit hydrogen atoms... (have {len(self.coords)} coords so far)")  # Commented out for reduced verbosity
         self._place_explicit_hydrogens()
-        print(f"[DEBUG SMILES] After explicit H placement: {len(self.coords)} total coordinates")
-        
+        # print(f"[DEBUG SMILES] After explicit H placement: {len(self.coords)} total coordinates")  # Commented out for reduced verbosity
+
         # Step 5: Virtual hydrogen placement (for implicit H only)
-        print("[DEBUG SMILES] Virtual hydrogen placement...")
+        # print("[DEBUG SMILES] Virtual hydrogen placement...")  # Commented out for reduced verbosity
         self._place_virtual_hydrogens()
-        
+
         # Step 5: Layout refinement
-        print("[DEBUG SMILES] Layout refinement...")
+        # print("[DEBUG SMILES] Layout refinement...")  # Commented out for reduced verbosity
         self._refine_layout()
         
         # Step 6: Center coordinates
@@ -168,7 +168,7 @@ class CoordinateGenerator2DSMILES:
         total = len(self.coords)
         real = sum(1 for idx in self.coords if idx >= 0)
         virtual = sum(1 for idx in self.coords if idx < 0)
-        print(f"[DEBUG SMILES] Generated {total} coordinates ({real} real + {virtual} virtual H)")
+        # print(f"[DEBUG SMILES] Generated {total} coordinates ({real} real + {virtual} virtual H)")  # Commented out for reduced verbosity
         
         return self.coords
     
@@ -191,7 +191,7 @@ class CoordinateGenerator2DSMILES:
         try:
             # Force ring system detection
             cycles = o_mol.get_smallest_independent_cycles()
-            print(f"[DEBUG SMILES] Detected {len(cycles)} ring systems")
+            # print(f"[DEBUG SMILES] Detected {len(cycles)} ring systems")  # Commented out for reduced verbosity
             
             # Mark aromatic rings for better handling
             try:
@@ -213,13 +213,15 @@ class CoordinateGenerator2DSMILES:
                                 vertex = vertices[atom_idx]
                                 if hasattr(vertex, 'aromatic'):
                                     vertex.aromatic = True
-                
-                print("[DEBUG SMILES] Enhanced ring perception completed")
+
+                # print("[DEBUG SMILES] Enhanced ring perception completed")  # Commented out for reduced verbosity
             except Exception as e:
-                print(f"[DEBUG SMILES] Ring perception warning: {e}")
-            
+                # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
+                pass
+
         except Exception as e:
-            print(f"[DEBUG SMILES] Ring perception warning: {e}")
+            # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
+            pass
         
         # Normalize bond orders for OASA
         for edge in o_mol.edges:
@@ -262,7 +264,7 @@ class CoordinateGenerator2DSMILES:
             else:
                 missing_atoms.append(internal_idx)
         
-        print(f"[DEBUG SMILES] OASA placed {len(self.coords)} atoms, {len(missing_atoms)} missing")
+        # print(f"[DEBUG SMILES] OASA placed {len(self.coords)} atoms, {len(missing_atoms)} missing")  # Commented out for reduced verbosity
         
         # Handle missing atoms - ensure ALL atoms get coordinates
         if missing_atoms:
@@ -337,8 +339,9 @@ class CoordinateGenerator2DSMILES:
                 placed += 1
         
         if placed > 0:
-            print(f"[DEBUG SMILES] Placed {placed} missing atoms OASA-style")
-        
+            # print(f"[DEBUG SMILES] Placed {placed} missing atoms OASA-style")  # Commented out for reduced verbosity
+            pass
+
         return placed
     
     def _place_remaining_in_circle(self, missing_atoms):
@@ -362,7 +365,7 @@ class CoordinateGenerator2DSMILES:
                 radius = 8.0 + (i // 5) * 2.0  # Expand circle
                 self.coords[atom_idx] = [cx + radius * math.cos(angle), cy + radius * math.sin(angle)]
         
-        print(f"[DEBUG SMILES] Placed {len(missing_atoms)} isolated atoms in circle arrangement")
+        # print(f"[DEBUG SMILES] Placed {len(missing_atoms)} isolated atoms in circle arrangement")  # Commented out for reduced verbosity
     
     def _place_explicit_hydrogens(self):
         """
@@ -407,7 +410,8 @@ class CoordinateGenerator2DSMILES:
                 placed += 1
         
         if placed > 0:
-            print(f"[DEBUG SMILES] Placed {placed} explicit hydrogen atoms")
+            # print(f"[DEBUG SMILES] Placed {placed} explicit hydrogen atoms")  # Commented out for reduced verbosity
+            pass
     
     def _place_virtual_hydrogens(self):
         """
@@ -454,7 +458,7 @@ class CoordinateGenerator2DSMILES:
                 self.coords[virtual_h_idx] = [h_x, h_y]
                 placed_count += 1
         
-        print(f"[DEBUG SMILES] Placed {placed_count} virtual hydrogens for {total_h_needed} needed")
+        # print(f"[DEBUG SMILES] Placed {placed_count} virtual hydrogens for {total_h_needed} needed")  # Commented out for reduced verbosity
     
     def _calculate_implicit_h_count(self, atom):
         """
@@ -591,7 +595,7 @@ class CoordinateGenerator2DSMILES:
             # Check if all atoms in atom_map have valid coordinates
             missing_coords = [idx for idx in atom_map if idx not in self.coords]
             if missing_coords:
-                print(f"[DEBUG SMILES] Layout refinement skipped: {len(missing_coords)} atoms missing coordinates")
+                # print(f"[DEBUG SMILES] Layout refinement skipped: {len(missing_coords)} atoms missing coordinates")  # Commented out for reduced verbosity
                 return
             
             # Set existing coordinates on OASA molecule
@@ -599,7 +603,7 @@ class CoordinateGenerator2DSMILES:
                 x, y = self.coords[internal_idx]
                 # Ensure valid numbers
                 if x is None or y is None:
-                    print(f"[DEBUG SMILES] Layout refinement skipped: atom {internal_idx} has None coordinates")
+                    # print(f"[DEBUG SMILES] Layout refinement skipped: atom {internal_idx} has None coordinates")  # Commented out for reduced verbosity
                     return
                 o_v.x = float(x)
                 o_v.y = float(y)
@@ -612,10 +616,11 @@ class CoordinateGenerator2DSMILES:
                 if internal_idx >= 0 and o_v.x is not None and o_v.y is not None:
                     self.coords[internal_idx] = [float(o_v.x), float(o_v.y)]
             
-            print(f"[DEBUG SMILES] Layout refinement: {getattr(optimizer, 'i', 0)} iterations, converged={converged}")
-            
+            # print(f"[DEBUG SMILES] Layout refinement: {getattr(optimizer, 'i', 0)} iterations, converged={converged}")  # Commented out for reduced verbosity
+
         except Exception as e:
-            print(f"[DEBUG SMILES] Layout refinement skipped: {e}")
+            # print(f"[DEBUG SMILES] Layout refinement skipped: {e}")  # Commented out for reduced verbosity
+            pass
     
     def _center_coords(self):
         """

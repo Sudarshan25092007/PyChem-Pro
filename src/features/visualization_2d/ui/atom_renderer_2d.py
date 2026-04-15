@@ -50,31 +50,26 @@ ELEMENT_COLORS_LIGHT = {
 
 
 class AtomRenderer2D:
-    """Stateless helper that draws atom labels on a QPainter.
-
-    All rendering parameters are read from the *viewer* reference
-    passed at construction time, so the renderer always stays in
-    sync with the viewer's zoom / style settings.
-    """
+    """Stateless helper that draws atom labels on a QPainter."""
 
     def __init__(self, viewer):
         self._v = viewer  # MolViewer2D instance
-
-    # ─── Fonts ────────────────────────────────────────────────────
+        self._explicit_h_positions = {}
+        self._explicit_h_angles = {}
 
     def _get_font(self):
-        """Get the main atom label font, scaled properly for display and export."""
+        """Get the main atom label font, scaled properly."""
+        from .rendering_config import RenderingConfig
         v = self._v
         base_scale = v._original_scale if v._original_scale is not None else v._scale
-        size = max(10, int(base_scale * 0.35))
-        if v._original_scale is not None:
-            size = min(size, 14)
+        size = int(base_scale * RenderingConfig.FONT_SIZE_RATIO)
+        size = max(RenderingConfig.MIN_FONT_SIZE, min(size, RenderingConfig.MAX_FONT_SIZE))
         font = QFont('Arial', size)
         font.setWeight(QFont.Weight.DemiBold)
         return font
 
     def _get_subscript_font(self):
-        """Get the subscript font (H count, charges), scaled properly."""
+        """Get the subscript font scaled properly."""
         v = self._v
         base_scale = v._original_scale if v._original_scale is not None else v._scale
         size = max(6, int(base_scale * 0.20))
@@ -84,39 +79,16 @@ class AtomRenderer2D:
         font.setWeight(QFont.Weight.DemiBold)
         return font
 
-    # ─── Direction-aware H placement (ChemDraw-style) ─────────────
-
     def _get_h_placement_side(self, atom_idx, visible):
-        """
-        Determine whether H labels should be placed to the LEFT or RIGHT
-        of the heteroatom symbol, based on the average direction of bonds.
-
-        Returns:
-            'right' -- H goes after the atom symbol (default: OH, NH)
-            'left'  -- H goes before the atom symbol (HO, HN)
-        """
+        """Determine H placement side (right/left)."""
         v = self._v
-        if atom_idx not in v.coords_2d:
-            return 'right'
-
+        if atom_idx not in v.coords_2d: return 'right'
         ax, ay = v.coords_2d[atom_idx]
         neighbors = v.molecule.get_neighbors(atom_idx)
-        visible_neighbors = [n for n in neighbors if n in visible and n in v.coords_2d]
-
-        if not visible_neighbors:
-            return 'right'
-
-        sum_dx = 0.0
-        for n_idx in visible_neighbors:
-            nx, ny = v.coords_2d[n_idx]
-            sum_dx += (nx - ax)
-
-        if sum_dx > 0.05:
-            return 'left'
-        else:
-            return 'right'
-
-    # ─── Draw all labels ──────────────────────────────────────────
+        v_neighbors = [n for n in neighbors if n in visible and n in v.coords_2d]
+        if not v_neighbors: return 'right'
+        sum_dx = sum((v.coords_2d[n][0] - ax) for n in v_neighbors)
+        return 'left' if sum_dx > 0.05 else 'right'
 
     def draw_all_labels(self, painter, visible, has_label):
         v = self._v
@@ -125,8 +97,8 @@ class AtomRenderer2D:
         fm = QFontMetrics(font)
         fm_sub = QFontMetrics(sub_font)
 
-        char_gap = max(4, int(v._scale * 0.12))
-        sub_gap = max(2, int(v._scale * 0.04))
+        from .rendering_config import RenderingConfig
+        char_gap, sub_gap, export_factor = RenderingConfig.get_gaps(v)
 
         for idx in visible:
             if not has_label.get(idx, False):
@@ -135,8 +107,7 @@ class AtomRenderer2D:
             mx, my = v.coords_2d[idx]
             sx, sy = v._to_screen(mx, my)
 
-            h_side = self._get_h_placement_side(idx, visible)
-            parts = self._label_parts(atom, h_side)
+            parts = self._label_parts(atom)
             color = self._element_color(atom.symbol)
 
             total_w = 0
@@ -150,16 +121,26 @@ class AtomRenderer2D:
                         total_w += char_gap
 
             h = fm.height()
+            scaled_padding = int(v._label_padding * export_factor)
+            pad = scaled_padding + (1 if export_factor <= 1.0 else int(export_factor))
 
-            pad = v._label_padding + 1
-            bg_rect = QRectF(sx - total_w / 2 - pad, sy - h / 2 - 2,
+            # Stable horizontal centering using font's natural advance
+            first_text, first_is_sub = parts[0]
+            m_first = fm_sub if first_is_sub else fm
+            first_w = m_first.horizontalAdvance(first_text)
+            
+            # Start cx so that the center of the heavy atom symbol is at sx (with a slight shift for export balance)
+            cx = sx - first_w / 2 + RenderingConfig.get_h_offset(export_factor)
+            
+            # Draw background rectangle aligned with the actual text layout
+            bg_rect = QRectF(cx - pad, sy - h / 2 - 2,
                              total_w + pad * 2, h + 4)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(v.bg_color))
             painter.drawRect(bg_rect)
 
-            cx = sx - total_w / 2
-            baseline_offset = (fm.ascent() - fm.descent()) / 2
+            # Use centralized vertical offset for consistent heteroatom placement
+            baseline_y = sy + RenderingConfig.get_v_offset(fm, export_factor)
 
             for i, (text, is_sub) in enumerate(parts):
                 f = sub_font if is_sub else font
@@ -176,223 +157,164 @@ class AtomRenderer2D:
                 painter.setPen(color)
 
                 if is_sub:
-                    sub_baseline = (fm_sub.ascent() - fm_sub.descent()) / 2
                     painter.drawText(
-                        QPointF(cx, sy + sub_baseline + fm.descent() + 2), text)
+                        QPointF(cx, baseline_y + fm.descent() + (2 * export_factor)), text)
                 else:
-                    painter.drawText(QPointF(cx, sy + baseline_offset), text)
+                    painter.drawText(QPointF(cx, baseline_y), text)
                 cx += tw
 
-        # Draw explicit H atoms for heteroatoms AFTER all labels
-        self._draw_explicit_h_atoms(painter, visible, has_label, font, fm)
+        self._draw_explicit_h_atoms(painter, visible, has_label, font, fm, export_factor > 1.0, export_factor)
 
-    # ─── Explicit H atoms ─────────────────────────────────────────
-
-    def _draw_explicit_h_atoms(self, painter, visible, has_label, font, fm):
-        """Draw explicit hydrogen atoms as separate vertices with short bonds
-        for heteroatoms (N, O, S, P, etc.)."""
+    def _draw_explicit_h_atoms(self, painter, visible, has_label, font, fm, is_export, export_factor):
         v = self._v
         h_color = self._element_color('H')
         bond_color = v._bond_color()
         bw = v._bond_width()
         h = fm.height()
-        baseline_offset = (fm.ascent() - fm.descent()) / 2
+        from .rendering_config import RenderingConfig
+        baseline_offset = RenderingConfig.get_v_offset(fm, export_factor)
+        h_bond_len = v._scale * 0.70
 
-        h_bond_len = v._scale * 0.45
+        self._explicit_h_positions.clear()
 
         for idx in visible:
-            if not has_label.get(idx, False):
-                continue
+            if not has_label.get(idx, False): continue
             atom = v.molecule.atoms[idx]
-
-            if atom.symbol == 'C' or atom.symbol == 'H':
-                continue
-
+            if atom.symbol in ('C', 'H'): continue
             h_count = self._get_total_h_count(atom)
-            if h_count == 0:
-                continue
+            if h_count == 0: continue
 
             mx, my = v.coords_2d[idx]
             sx, sy = v._to_screen(mx, my)
-
-            label_half_w = fm.horizontalAdvance(atom.symbol) / 2 + v._label_padding
-
+            base_symbol_w = fm.horizontalAdvance(atom.symbol) / 2
+            scaled_padding = v._label_padding * export_factor
+            label_half_w = base_symbol_w + scaled_padding
             h_positions = self._compute_h_positions(idx, visible, h_count, h_bond_len)
 
-            for h_pos_x, h_pos_y in h_positions:
-                dx = h_pos_x - sx
-                dy = h_pos_y - sy
+            for h_idx, (h_pos_x, h_pos_y) in enumerate(h_positions):
+                h_key = (idx, h_idx)
+                self._explicit_h_positions[h_key] = (h_pos_x, h_pos_y, sx, sy)
+                dx, dy = h_pos_x - sx, h_pos_y - sy
                 dist = math.hypot(dx, dy)
-                if dist < 1:
-                    continue
+                if dist < 1: continue
 
-                bond_start_x = sx + (dx / dist) * label_half_w
-                bond_start_y = sy + (dy / dist) * label_half_w
-
+                nx, ny = dx/dist, dy/dist
+                bond_start_x, bond_start_y = sx + nx * label_half_w, sy + ny * label_half_w
                 h_tw = fm.horizontalAdvance('H')
-                h_label_half = h_tw / 2 + v._label_padding
-                bond_end_x = h_pos_x - (dx / dist) * h_label_half
-                bond_end_y = h_pos_y - (dy / dist) * h_label_half
+                h_label_half = h_tw / 2 + scaled_padding
+                bond_end_x, bond_end_y = h_pos_x - nx * h_label_half, h_pos_y - ny * h_label_half
 
-                pen = QPen(bond_color, bw * 0.8, Qt.PenStyle.SolidLine,
-                           Qt.PenCapStyle.RoundCap)
+                pen = QPen(bond_color, bw * 0.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
                 painter.setPen(pen)
-                painter.drawLine(QPointF(bond_start_x, bond_start_y),
-                                 QPointF(bond_end_x, bond_end_y))
+                painter.drawLine(QPointF(bond_start_x, bond_start_y), QPointF(bond_end_x, bond_end_y))
 
-                h_label = 'H'
-                tw = fm.horizontalAdvance(h_label)
-                pad = v._label_padding
-                bg_rect = QRectF(h_pos_x - tw / 2 - pad, h_pos_y - h / 2 - 2,
-                                 tw + pad * 2, h + 4)
+                tw = fm.horizontalAdvance('H')
+                bg_rect = QRectF(h_pos_x - tw / 2 - scaled_padding, h_pos_y - h / 2 - 2, tw + scaled_padding * 2, h + 4)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(v.bg_color))
                 painter.drawRect(bg_rect)
 
-                painter.setFont(font)
-                painter.setPen(h_color)
-                painter.drawText(
-                    QPointF(h_pos_x - tw / 2, h_pos_y + baseline_offset), h_label)
-
-    # ─── H position computation ───────────────────────────────────
+                painter.setFont(font); painter.setPen(h_color)
+                painter.drawText(QPointF(h_pos_x - tw / 2, h_pos_y + baseline_offset), 'H')
 
     def _compute_h_positions(self, atom_idx, visible, h_count, h_bond_len):
-        """Compute screen positions for explicit H atoms around a heteroatom."""
         v = self._v
-        ax, ay = v.coords_2d[atom_idx]
-        sx, sy = v._to_screen(ax, ay)
+        mx, my = v.coords_2d[atom_idx]
+        sx, sy = v._to_screen(mx, my)
+        
+        custom_angles = [self._explicit_h_angles.get((atom_idx, i)) for i in range(h_count)]
+        if all(a is not None for a in custom_angles):
+            return [(sx + h_bond_len * math.cos(a), sy + h_bond_len * math.sin(a)) for a in custom_angles]
 
         neighbors = v.molecule.get_neighbors(atom_idx)
-        visible_neighbors = [n for n in neighbors if n in visible and n in v.coords_2d]
-
+        v_neighbors = [n for n in neighbors if n in visible and n in v.coords_2d]
         bond_angles = []
-        for n_idx in visible_neighbors:
+        for n_idx in v_neighbors:
             nx, ny = v.coords_2d[n_idx]
             nsx, nsy = v._to_screen(nx, ny)
-            angle = math.atan2(nsy - sy, nsx - sx)
-            bond_angles.append(angle)
+            bond_angles.append(math.atan2(nsy - sy, nsx - sx))
 
         positions = []
-
         if not bond_angles:
-            positions.append((sx, sy + h_bond_len))
+            for i in range(h_count):
+                a = math.pi / 2 + (i - (h_count - 1) / 2) * (math.pi / 6)
+                positions.append((sx + h_bond_len * math.cos(a), sy + h_bond_len * math.sin(a)))
         elif len(bond_angles) == 1:
-            base_angle = bond_angles[0] + math.pi
-            if h_count == 1:
-                positions.append((sx + h_bond_len * math.cos(base_angle),
-                                  sy + h_bond_len * math.sin(base_angle)))
-            elif h_count == 2:
-                for offset in (-math.pi / 3, math.pi / 3):
-                    a = base_angle + offset
-                    positions.append((sx + h_bond_len * math.cos(a),
-                                      sy + h_bond_len * math.sin(a)))
-            else:
-                for i in range(h_count):
-                    a = base_angle + (i - (h_count - 1) / 2) * (math.pi / 3)
-                    positions.append((sx + h_bond_len * math.cos(a),
-                                      sy + h_bond_len * math.sin(a)))
+            base = bond_angles[0] + math.pi
+            for i in range(h_count):
+                a = base + (i - (h_count - 1) / 2) * (math.pi / 3)
+                positions.append((sx + h_bond_len * math.cos(a), sy + h_bond_len * math.sin(a)))
         else:
             bond_angles.sort()
             gaps = []
             for i in range(len(bond_angles)):
-                a1 = bond_angles[i]
-                a2 = bond_angles[(i + 1) % len(bond_angles)]
-                gap = (a2 - a1) % (2 * math.pi)
-                gaps.append((gap, a1))
-
+                a1, a2 = bond_angles[i], bond_angles[(i + 1) % len(bond_angles)]
+                gaps.append(((a2 - a1) % (2 * math.pi), a1))
             gaps.sort(key=lambda g: g[0], reverse=True)
+            for i in range(min(h_count, len(gaps))):
+                a = gaps[i][1] + gaps[i][0] / 2
+                positions.append((sx + h_bond_len * math.cos(a), sy + h_bond_len * math.sin(a)))
 
-            placed = 0
-            for gap_size, start_angle in gaps:
-                if placed >= h_count:
-                    break
-                mid_angle = start_angle + gap_size / 2
-                positions.append((sx + h_bond_len * math.cos(mid_angle),
-                                  sy + h_bond_len * math.sin(mid_angle)))
-                placed += 1
-
-        return positions[:h_count]
-
-    # ─── Hydrogen count ───────────────────────────────────────────
+        return positions
 
     def _get_total_h_count(self, atom):
-        """Get total hydrogen count (implicit + explicit structural H)."""
         v = self._v
         h_count = atom.num_implicit_h
         for n_idx in v.molecule.get_neighbors(atom.index):
-            if v.molecule.atoms[n_idx].symbol == 'H':
-                h_count += 1
+            if v.molecule.atoms[n_idx].symbol == 'H': h_count += 1
         return h_count
 
-    # ─── Label parts ──────────────────────────────────────────────
-
-    def _label_parts(self, atom, h_side='right'):
-        """Return list of (text, is_subscript) for the atom label.
-
-        For heteroatoms: returns ONLY the atom symbol (H drawn as explicit vertices).
-        For carbon atoms: returns the full label with H count (CH3, CH2, etc.).
-        """
+    def _label_parts(self, atom):
         h_count = self._get_total_h_count(atom)
-
         if atom.symbol != 'C' and atom.symbol != 'H':
             parts = [(atom.symbol, False)]
-            if atom.formal_charge > 0:
-                ch = '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
-                parts.append((ch, True))
-            elif atom.formal_charge < 0:
-                ch = '-' if atom.formal_charge == -1 else str(atom.formal_charge)
+            if atom.formal_charge != 0:
+                ch = ('+' if atom.formal_charge > 0 else '') + str(atom.formal_charge)
+                if atom.formal_charge == 1: ch = '+'
+                if atom.formal_charge == -1: ch = '-'
                 parts.append((ch, True))
             return parts
 
-        h_parts = []
-        if h_count == 1:
-            h_parts.append(('H', False))
-        elif h_count > 1:
-            h_parts.append(('H', False))
-            h_parts.append((str(h_count), True))
-
-        charge_parts = []
-        if atom.formal_charge > 0:
-            ch = '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
-            charge_parts.append((ch, True))
-        elif atom.formal_charge < 0:
-            ch = '-' if atom.formal_charge == -1 else str(atom.formal_charge)
-            charge_parts.append((ch, True))
-
-        symbol_part = (atom.symbol, False)
-        if h_side == 'left' and h_parts:
-            parts = h_parts + [symbol_part] + charge_parts
-        else:
-            parts = [symbol_part] + h_parts + charge_parts
-
+        parts = [(atom.symbol, False)]
+        if h_count == 1: parts.append(('H', False))
+        elif h_count > 1: parts.extend([('H', False), (str(h_count), True)])
+        if atom.formal_charge != 0:
+            ch = ('+' if atom.formal_charge > 0 else '') + str(atom.formal_charge)
+            if atom.formal_charge == 1: ch = '+'
+            if atom.formal_charge == -1: ch = '-'
+            parts.append((ch, True))
         return parts
 
     def _build_label(self, atom):
-        """Simple flat label for shrink calculations."""
-        v = self._v
+        if atom.symbol not in ('C', 'H'): return atom.symbol
         label = atom.symbol
-        h_count = atom.num_implicit_h
-
-        for n_idx in v.molecule.get_neighbors(atom.index):
-            if v.molecule.atoms[n_idx].symbol == 'H':
-                h_count += 1
-
-        if h_count == 1:
-            label += 'H'
-        elif h_count > 1:
-            label += f'H{h_count}'
-        if atom.formal_charge > 0:
-            label += '+' if atom.formal_charge == 1 else f'+{atom.formal_charge}'
-        elif atom.formal_charge < 0:
-            label += '-' if atom.formal_charge == -1 else str(atom.formal_charge)
+        h_count = self._get_total_h_count(atom)
+        if h_count == 1: label += 'H'
+        elif h_count > 1: label += f'H{h_count}'
+        if atom.formal_charge != 0:
+            ch = ('+' if atom.formal_charge > 0 else '') + str(atom.formal_charge)
+            if atom.formal_charge == 1: ch = '+'
+            if atom.formal_charge == -1: ch = '-'
+            label += ch
         return label
 
-    # ─── Element color ────────────────────────────────────────────
-
     def _element_color(self, symbol):
-        """Return the QColor for the given element symbol."""
         v = self._v
         palette = ELEMENT_COLORS if v._is_dark_bg else ELEMENT_COLORS_LIGHT
-        return palette.get(
-            symbol,
-            QColor(200, 200, 200) if v._is_dark_bg else QColor(30, 30, 30))
+        return palette.get(symbol, QColor(200, 200, 200) if v._is_dark_bg else QColor(30, 30, 30))
+
+    def hit_test_explicit_h(self, pos, tolerance=12):
+        tol_sq = tolerance**2
+        for h_key, (hx, hy, _, _) in self._explicit_h_positions.items():
+            if (pos.x()-hx)**2 + (pos.y()-hy)**2 < tol_sq: return h_key
+        return None
+
+    def update_h_position(self, parent_idx, h_idx, new_pos):
+        v = self._v
+        if parent_idx not in v.coords_2d: return
+        mx, my = v.coords_2d[parent_idx]
+        sx, sy = v._to_screen(mx, my)
+        self._explicit_h_angles[(parent_idx, h_idx)] = math.atan2(new_pos.y() - sy, new_pos.x() - sx)
+
+    def get_explicit_h_data(self, h_key): return self._explicit_h_positions.get(h_key)
+    def clear_explicit_h_angles(self): self._explicit_h_angles.clear()

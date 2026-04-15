@@ -39,7 +39,7 @@ def main():
     qt_import_start = time.perf_counter()
     from src.shared.qt_compat import QApplication, QFont, QIcon, Qt
     qt_import_time = time.perf_counter() - qt_import_start
-    print(f"[PERF] Qt imports: {qt_import_time:.3f}s")
+    # print(f"[PERF] Qt imports: {qt_import_time:.3f}s")  # Commented out for reduced verbosity
 
     # High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -71,11 +71,11 @@ def main():
     window = MainWindow()
     window.show()
     main_window_time = time.perf_counter() - main_window_start
-    print(f"[PERF] MainWindow creation: {main_window_time:.3f}s")
+    # print(f"[PERF] MainWindow creation: {main_window_time:.3f}s")  # Commented out for reduced verbosity
     
     # Total startup time
     total_startup = time.perf_counter() - _startup_start
-    print(f"[PERF] Total startup time: {total_startup:.3f}s")
+    # print(f"[PERF] Total startup time: {total_startup:.3f}s")  # Commented out for reduced verbosity
     
     # Print performance report if available
     if _use_optimizer:

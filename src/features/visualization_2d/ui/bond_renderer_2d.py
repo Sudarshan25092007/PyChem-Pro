@@ -1,95 +1,122 @@
 """
-2D Bond Renderer — ChemDraw-quality bond drawing for skeletal formulas.
+2D Bond Renderer — Robust bond drawing with stereochemistry and label clearance.
 
-Handles single, double, triple, aromatic, wedge, and hash (dash) bonds.
-Extracted from mol_viewer_2d.py as a pure refactor (no behavior change).
+Handles single, double, triple, aromatic, and stereo (wedge/hash) bonds.
+Calculates label clearance (shrink) to prevent bonds from overlapping atom labels.
 """
 
 import math
-from src.shared.qt_compat import Qt, QPointF
-from src.shared.qt_compat import QPainter, QPen, QBrush, QPainterPath
+from src.shared.qt_compat import Qt, QPointF, QPainterPath, QPen, QBrush, QPainter
 
 
 class BondRenderer2D:
-    """Stateless helper that draws bonds on a QPainter.
-
-    All rendering parameters are read from the *viewer* reference
-    passed at construction time, so the renderer always stays in
-    sync with the viewer's zoom / style settings.
-    """
+    """Stateless helper for drawing molecular bonds on a QPainter."""
 
     def __init__(self, viewer):
         self._v = viewer  # MolViewer2D instance
 
-    # ─── Public entry point ───────────────────────────────────────
-
     def draw_all_bonds(self, painter, visible, has_label):
-        """Draw every bond whose both endpoints are in *visible*."""
+        """Iterate through all bonds and draw them if visible."""
         v = self._v
         bond_color = v._bond_color()
         bw = v._bond_width()
 
-        for bond in v.molecule.bonds:
-            i, j = bond.begin_atom_idx, bond.end_atom_idx
-            if i not in visible or j not in visible:
-                continue
-            if i not in v.coords_2d or j not in v.coords_2d:
+        # Group indices by bond set to avoid double drawing
+        drawn_bonds = set()
+
+        for i in visible:
+            if i not in v.coords_2d:
                 continue
 
             x1, y1 = v._to_screen(*v.coords_2d[i])
-            x2, y2 = v._to_screen(*v.coords_2d[j])
+            neighbors = v.molecule.get_neighbors(i)
 
-            # Shrink towards labelled atoms
-            dx, dy = x2 - x1, y2 - y1
-            dist = math.hypot(dx, dy)
-            if dist < 1:
-                continue
-            nx, ny = dx / dist, dy / dist
+            for j in neighbors:
+                if j not in visible or j not in v.coords_2d:
+                    continue
 
-            # Shrink amount based on font metrics
-            shrink1 = self._label_shrink(i, has_label)
-            shrink2 = self._label_shrink(j, has_label)
+                bond_idx = tuple(sorted((i, j)))
+                if bond_idx in drawn_bonds:
+                    continue
+                drawn_bonds.add(bond_idx)
 
-            if dist > (shrink1 + shrink2 + 4):
-                x1 += nx * shrink1
-                y1 += ny * shrink1
-                x2 -= nx * shrink2
-                y2 -= ny * shrink2
+                bond = v.molecule.get_bond_between(i, j)
+                x2, y2 = v._to_screen(*v.coords_2d[j])
+
                 dx, dy = x2 - x1, y2 - y1
                 dist = math.hypot(dx, dy)
+                if dist < 2:
+                    continue
+                nx, ny = dx / dist, dy / dist
 
-            order = bond.order
-            if bond.is_aromatic:
-                order = 1.5
+                # Shrink amount based on font metrics and bond direction
+                shrink1 = self._label_shrink(i, has_label, dx, dy)
+                shrink2 = self._label_shrink(j, has_label, -dx, -dy)
 
-            if order == 2.0 or bond.is_double:
-                self._draw_double(painter, x1, y1, x2, y2, bond_color, bw, bond)
-            elif order == 3.0 or bond.is_triple:
-                self._draw_triple(painter, x1, y1, x2, y2, bond_color, bw)
-            elif order == 1.5:
-                self._draw_aromatic(painter, x1, y1, x2, y2, bond_color, bw, bond)
-            else:
-                self._draw_single(painter, x1, y1, x2, y2, bond_color, bw, bond)
+                if dist > (shrink1 + shrink2 + 4):
+                    bx1, by1 = x1 + nx * shrink1, y1 + ny * shrink1
+                    bx2, by2 = x2 - nx * shrink2, y2 - ny * shrink2
+                else:
+                    # Not enough room to draw bond
+                    continue
+
+                order = bond.order if bond else 1
+                if order == 2:
+                    self._draw_double(painter, bx1, by1, bx2, by2, bond_color, bw, bond)
+                elif order == 3:
+                    self._draw_triple(painter, bx1, by1, bx2, by2, bond_color, bw)
+                elif order == 1.5:
+                    self._draw_aromatic(painter, bx1, by1, bx2, by2, bond_color, bw, bond)
+                else:
+                    self._draw_single(painter, bx1, by1, bx2, by2, bond_color, bw, bond)
 
     # ─── Label shrink helper ──────────────────────────────────────
 
-    def _label_shrink(self, idx, has_label):
-        """Compute how much to shrink bonds near labeled atoms."""
+    def _label_shrink(self, idx, has_label, vx=0, vy=0):
+        """Compute how much to shrink bonds near labeled atoms.
+        
+        Uses RenderingConfig for consistent spacing and direction-aware logic
+        to ensure bonds point to the anchor atom center.
+        """
         v = self._v
         if not has_label.get(idx, False):
             return 0
         atom = v.molecule.atoms[idx]
-        label = v._atom_renderer._build_label(atom)
+        
+        parts = v._atom_renderer._label_parts(atom)
         font = v._atom_renderer._get_font()
         from src.shared.qt_compat import QFontMetrics
         fm = QFontMetrics(font)
-        w = fm.horizontalAdvance(label)
-        return (w / 2) + v._label_padding
+        
+        if not parts:
+            return v._label_padding
+            
+        first_text, _ = parts[0]
+        first_w = fm.horizontalAdvance(first_text)
+        
+        from .rendering_config import RenderingConfig
+        char_gap, sub_gap, export_factor = RenderingConfig.get_gaps(v)
+
+        total_w = 0
+        for i, (text, is_sub) in enumerate(parts):
+            m = QFontMetrics(v._atom_renderer._get_subscript_font() if is_sub else font)
+            total_w += m.horizontalAdvance(text)
+            if i > 0:
+                total_w += sub_gap if is_sub else (char_gap if not parts[i-1][1] else 0)
+        
+        scaled_padding = int(v._label_padding * export_factor)
+        h_offset = RenderingConfig.get_h_offset(export_factor)
+
+        if vx > 0:
+            # Bond leaves to the right: shift moves label closer/further
+            return (total_w - first_w / 2 + scaled_padding) - h_offset
+        else:
+            # Bond leaves to the left: shift moves symbol closer/further
+            return (first_w / 2 + scaled_padding) + h_offset
 
     # ─── Single bond ──────────────────────────────────────────────
 
     def _draw_single(self, painter, x1, y1, x2, y2, color, width, bond=None):
-        """Single bond — with wedge/hash stereochemistry support."""
         if bond and hasattr(bond, 'stereo'):
             if bond.stereo == 'up':
                 self._draw_wedge(painter, x1, y1, x2, y2, color, width)
@@ -98,184 +125,95 @@ class BondRenderer2D:
                 self._draw_hash(painter, x1, y1, x2, y2, color, width)
                 return
 
-        pen = QPen(color, width, Qt.PenStyle.SolidLine,
-                   Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        pen = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-    # ─── Wedge bond ───────────────────────────────────────────────
+    # ─── Stereo bonds ─────────────────────────────────────────────
 
     def _draw_wedge(self, painter, x1, y1, x2, y2, color, width):
-        """Draw wedge bond (solid triangle) for stereochemistry."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
-        if dist < 2:
-            return
-
+        if dist < 2: return
         nx, ny = -dy / dist, dx / dist
         wedge_width = self._v._scale * self._v._wedge_width_ratio
-
-        p1 = QPointF(x1, y1)
-        p2 = QPointF(x1 - nx * wedge_width, y1 - ny * wedge_width)
-        p3 = QPointF(x1 + nx * wedge_width, y1 + ny * wedge_width)
-
-        path = QPainterPath()
-        path.moveTo(p1)
-        path.lineTo(p2)
-        path.lineTo(p3)
-        path.closeSubpath()
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(color))
-        painter.drawPath(path)
-
-        pen = QPen(color, width * 0.5, Qt.PenStyle.SolidLine,
-                   Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(path)
-
-    # ─── Hash bond ────────────────────────────────────────────────
+        p1, p2, p3 = QPointF(x1, y1), QPointF(x2 - nx*wedge_width, y2 - ny*wedge_width), QPointF(x2 + nx*wedge_width, y2 + ny*wedge_width)
+        path = QPainterPath(); path.moveTo(p1); path.lineTo(p2); path.lineTo(p3); path.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QBrush(color)); painter.drawPath(path)
 
     def _draw_hash(self, painter, x1, y1, x2, y2, color, width):
-        """Draw hash bond (parallel lines) for stereochemistry."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
-        if dist < 2:
-            return
-
+        if dist < 2: return
         nx, ny = -dy / dist, dx / dist
-        hash_width = self._v._scale * self._v._wedge_width_ratio
-
-        pen = QPen(color, width * 0.5, Qt.PenStyle.SolidLine,
-                   Qt.PenCapStyle.RoundCap)
+        hash_w = self._v._scale * self._v._wedge_width_ratio
+        pen = QPen(color, width * 0.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-
-        for i in range(1, 6):
+        for i in range(1, 7):
             t = i / 6.0
-            hx = x1 + dx * t
-            hy = y1 + dy * t
-            h1x = hx - nx * hash_width
-            h1y = hy - ny * hash_width
-            h2x = hx + nx * hash_width
-            h2y = hy + ny * hash_width
-            painter.drawLine(QPointF(h1x, h1y), QPointF(h2x, h2y))
+            hx, hy = x1 + dx * t, y1 + dy * t
+            hw = hash_w * t
+            painter.drawLine(QPointF(hx - nx*hw, hy - ny*hw), QPointF(hx + nx*hw, hy + ny*hw))
 
-    # ─── Double bond ──────────────────────────────────────────────
+    # ─── Double/Triple/Aromatic ───────────────────────────────────
 
     def _draw_double(self, painter, x1, y1, x2, y2, color, width, bond=None):
-        """ChemDraw-style double bond: one full line + one inner shorter line."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
-        if dist < 2:
-            return
-        ux, uy = dx / dist, dy / dist
+        if dist < 2: return
+        ux, uy = dx/dist, dy/dist
         nx, ny = -uy, ux
         offset = self._v._scale * self._v._double_offset_ratio
-
         side = self._double_bond_side(bond, x1, y1, x2, y2, nx, ny)
         onx, ony = nx * offset * side, ny * offset * side
 
-        pen_main = QPen(color, width, Qt.PenStyle.SolidLine,
-                        Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_main)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
         shrink = 0.18
-        ix1 = x1 + dx * shrink + onx
-        iy1 = y1 + dy * shrink + ony
-        ix2 = x2 - dx * shrink + onx
-        iy2 = y2 - dy * shrink + ony
-
-        pen_inner = QPen(color, width * 0.85, Qt.PenStyle.SolidLine,
-                         Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_inner)
-        painter.drawLine(QPointF(ix1, iy1), QPointF(ix2, iy2))
-
-    # ─── Triple bond ──────────────────────────────────────────────
+        painter.setPen(QPen(color, width * 0.85, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(x1 + dx*shrink + onx, y1 + dy*shrink + ony),
+                         QPointF(x2 - dx*shrink + onx, y2 - dy*shrink + ony))
 
     def _draw_triple(self, painter, x1, y1, x2, y2, color, width):
-        """Triple bond: one center line + two offset lines."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
-        if dist < 2:
-            return
-        ux, uy = dx / dist, dy / dist
+        if dist < 2: return
+        ux, uy = dx/dist, dy/dist
         nx, ny = -uy, ux
         offset = self._v._scale * self._v._triple_offset_ratio
-
-        pen = QPen(color, width * 0.8, Qt.PenStyle.SolidLine,
-                   Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-
+        painter.setPen(QPen(color, width * 0.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
-        for sign in (1, -1):
-            ox, oy = nx * offset * sign, ny * offset * sign
-            painter.drawLine(QPointF(x1 + ox, y1 + oy),
-                             QPointF(x2 + ox, y2 + oy))
-
-    # ─── Aromatic bond ────────────────────────────────────────────
+        for s in (1, -1):
+            ox, oy = nx * offset * s, ny * offset * s
+            painter.drawLine(QPointF(x1 + ox, y1 + oy), QPointF(x2 + ox, y2 + oy))
 
     def _draw_aromatic(self, painter, x1, y1, x2, y2, color, width, bond=None):
-        """Aromatic bond: solid + dashed inner line."""
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
-        if dist < 2:
-            return
-        ux, uy = dx / dist, dy / dist
+        if dist < 2: return
+        ux, uy = dx/dist, dy/dist
         nx, ny = -uy, ux
         offset = self._v._scale * self._v._double_offset_ratio
-
         side = self._double_bond_side(bond, x1, y1, x2, y2, nx, ny)
         onx, ony = nx * offset * side, ny * offset * side
-
-        pen_main = QPen(color, width, Qt.PenStyle.SolidLine,
-                        Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_main)
+        painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
         shrink = 0.18
-        ix1 = x1 + dx * shrink + onx
-        iy1 = y1 + dy * shrink + ony
-        ix2 = x2 - dx * shrink + onx
-        iy2 = y2 - dy * shrink + ony
-
-        pen_dash = QPen(color, max(1.0, width * 0.65))
-        pen_dash.setStyle(Qt.PenStyle.DashLine)
-        pen_dash.setDashPattern([3.5, 2.5])
-        pen_dash.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen_dash = QPen(color, max(1.0, width * 0.65), Qt.PenStyle.DashLine)
+        pen_dash.setDashPattern([3.5, 2.5]); pen_dash.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen_dash)
-        painter.drawLine(QPointF(ix1, iy1), QPointF(ix2, iy2))
-
-    # ─── Double bond side logic ───────────────────────────────────
+        painter.drawLine(QPointF(x1 + dx*shrink + onx, y1 + dy*shrink + ony),
+                         QPointF(x2 - dx*shrink + onx, y2 - dy*shrink + ony))
 
     def _double_bond_side(self, bond, x1, y1, x2, y2, nx, ny):
-        """Determine which side the inner double bond should be on.
-        Prefers the side towards the ring center."""
         v = self._v
-        if bond is None:
-            return 1
-
-        if hasattr(v.molecule, '_rings') and v.molecule._rings:
-            target_ring = None
-            min_ring_size = 999
-
-            for ring in v.molecule._rings:
-                if bond.begin_atom_idx in ring and bond.end_atom_idx in ring:
-                    if len(ring) < min_ring_size:
-                        min_ring_size = len(ring)
-                        target_ring = ring
-
-            if target_ring:
-                cx_r = sum(v.coords_2d.get(r, (0, 0))[0] for r in target_ring) / len(target_ring)
-                cy_r = sum(v.coords_2d.get(r, (0, 0))[1] for r in target_ring) / len(target_ring)
-                cx_s, cy_s = v._to_screen(cx_r, cy_r)
-                mx = (x1 + x2) / 2
-                my = (y1 + y2) / 2
-                dot = (cx_s - mx) * nx + (cy_s - my) * ny
+        if not bond or not (hasattr(v.molecule, '_rings') and v.molecule._rings): return 1
+        for ring in v.molecule._rings:
+            if bond.begin_atom_idx in ring and bond.end_atom_idx in ring:
+                cx_r = sum(v.coords_2d[r][0] for r in ring) / len(ring)
+                cy_r = sum(v.coords_2d[r][1] for r in ring) / len(ring)
+                csx, csy = v._to_screen(cx_r, cy_r)
+                dot = (csx - (x1+x2)/2) * nx + (csy - (y1+y2)/2) * ny
                 return 1 if dot > 0 else -1
-
         return 1

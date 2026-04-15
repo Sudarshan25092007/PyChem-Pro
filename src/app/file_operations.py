@@ -45,13 +45,13 @@ def import_structure_file(window, filepath=None):
             "MOL2 Files (*.mol2);;"
             "All Files (*)")
     if not filepath:
-        print("[DEBUG] No file selected")
+        # print("[DEBUG] No file selected")  # Commented out for reduced verbosity
         return
 
-    print(f"[DEBUG] Selected file: {filepath}")
+    # print(f"[DEBUG] Selected file: {filepath}")  # Commented out for reduced verbosity
 
     file_size = os.path.getsize(filepath) / 1024  # KB
-    print(f"[DEBUG] File size: {file_size:.1f} KB")
+    # print(f"[DEBUG] File size: {file_size:.1f} KB")  # Commented out for reduced verbosity
 
     if file_size > 100:
         window.status_bar.showMessage(f"Importing large file ({file_size:.1f}KB): {filepath}")
@@ -67,26 +67,26 @@ def import_structure_file(window, filepath=None):
         loader = ParallelFileLoader(parallel_threshold_kb=100.0, use_parallel=False)
 
         ext = filepath.lower().rsplit('.', 1)[-1] if '.' in filepath else ''
-        print(f"[DEBUG] File extension: {ext}")
+        # print(f"[DEBUG] File extension: {ext}")  # Commented out for reduced verbosity
 
         with get_profiler().time_operation("file_load"):
             mol = loader.load_file(filepath)
 
         load_time = time.time() - load_start_time
-        print(f"[DEBUG] File loaded in {load_time:.3f}s")
+        # print(f"[DEBUG] File loaded in {load_time:.3f}s")  # Commented out for reduced verbosity
 
         if mol is None:
             raise ValueError("Failed to parse molecule - no atoms loaded")
 
         mol.properties['source_format'] = ext if ext in ('pdb', 'ent') else 'unknown'
 
-        print(f"[DEBUG] Molecule loaded: {len(mol.atoms)} atoms, {len(mol.bonds)} bonds")
-        print(f"[DEBUG] Molecule name: {mol.name}")
-        print(f"[DEBUG] Properties: {mol.properties}")
+        # print(f"[DEBUG] Molecule loaded: {len(mol.atoms)} atoms, {len(mol.bonds)} bonds")  # Commented out for reduced verbosity
+        # print(f"[DEBUG] Molecule name: {mol.name}")  # Commented out for reduced verbosity
+        # print(f"[DEBUG] Properties: {mol.properties}")  # Commented out for reduced verbosity
 
         num_atoms = len(mol.atoms)
         if num_atoms <= 150:
-            print("[DEBUG] Assigning hybridization...")
+            # print("[DEBUG] Assigning hybridization...")  # Commented out for reduced verbosity
             try:
                 mol.assign_hybridization()
                 mol.assign_sybyl_types()
@@ -94,20 +94,23 @@ def import_structure_file(window, filepath=None):
                 from src.features.smiles_parser.rules.aromaticity import perceive_aromaticity
                 perceive_aromaticity(mol)
             except Exception as e:
-                print(f"[DEBUG] Molecule typing/aromaticity failed: {e}")
+                # print(f"[DEBUG] Molecule typing/aromaticity failed: {e}")  # Commented out for reduced verbosity
+                pass
 
-            print("[DEBUG] Computing charges...")
+            # print("[DEBUG] Computing charges...")  # Commented out for reduced verbosity
             has_charges = any(a.partial_charge != 0 for a in mol.atoms)
             if not has_charges:
                 try:
                     from src.features.cheminformatics.electrostatics.gasteiger import compute_gasteiger_charges
                     compute_gasteiger_charges(mol)
                 except Exception as e:
-                    print(f"[DEBUG] charge computation failed: {e}")
+                    # print(f"[DEBUG] charge computation failed: {e}")  # Commented out for reduced verbosity
+                    pass
         else:
-            print("[DEBUG] Skipping hybridization/charges for large structure to ensure fast load speed")
+            # print("[DEBUG] Skipping hybridization/charges for large structure to ensure fast load speed")  # Commented out for reduced verbosity
+            pass
 
-        print("[DEBUG] Calling _set_molecule...")
+        # print("[DEBUG] Calling _set_molecule...")  # Commented out for reduced verbosity
         window._set_molecule(mol)
 
         is_protein = mol.properties.get('is_protein', False)
@@ -625,14 +628,14 @@ def _render_viewer_to_image(viewer, scale_factor, selection_only, fmt):
     max_x = max_y = float('-inf')
     
     if not is_3d and viewer.coords_2d:
-        # 2D: get atom positions in screen coords
+        # 2D: get atom positions in screen coords using _to_screen transformation
         atom_indices = viewer.selected_atoms if (selection_only and viewer.selected_atoms) else set(viewer.coords_2d.keys())
-        cx, cy = viewer.width() / 2, viewer.height() / 2
         for idx in atom_indices:
             if idx in viewer.coords_2d:
                 x, y = viewer.coords_2d[idx]
-                sx = cx + (x * viewer._scale) + viewer._offset_x
-                sy = cy - (y * viewer._scale) + viewer._offset_y
+                # Match _to_screen: sx = mx * _scale + _offset_x, sy = -my * _scale + _offset_y
+                sx = x * viewer._scale + viewer._offset_x
+                sy = -y * viewer._scale + viewer._offset_y
                 min_x, max_x = min(min_x, sx), max(max_x, sx)
                 min_y, max_y = min(min_y, sy), max(max_y, sy)
                 
@@ -670,15 +673,15 @@ def _render_viewer_to_image(viewer, scale_factor, selection_only, fmt):
     try:
         # Use viewer's export to get full image
         dpi = int(96 * scale_factor)
-        print(f"[DEBUG CopyImage] Exporting to {temp_path} at dpi={dpi}")
+        # print(f"[DEBUG CopyImage] Exporting to {temp_path} at dpi={dpi}")  # Commented out for reduced verbosity
         success = viewer.export_image(temp_path, dpi=dpi, bg_white=True)
-        print(f"[DEBUG CopyImage] Export success: {success}")
+        # print(f"[DEBUG CopyImage] Export success: {success}")  # Commented out for reduced verbosity
         if not success:
             return None
             
         # Load the exported image
         full_image = QImage(temp_path)
-        print(f"[DEBUG CopyImage] Image loaded: {not full_image.isNull()}, size: {full_image.width()}x{full_image.height()}")
+        # print(f"[DEBUG CopyImage] Image loaded: {not full_image.isNull()}, size: {full_image.width()}x{full_image.height()}")  # Commented out for reduced verbosity
         if full_image.isNull():
             return None
         
@@ -689,9 +692,9 @@ def _render_viewer_to_image(viewer, scale_factor, selection_only, fmt):
         crop_w = int(bbox_w * export_scale)
         crop_h = int(bbox_h * export_scale)
         
-        print(f"[DEBUG CopyImage] Bounding box: ({bbox_x:.1f}, {bbox_y:.1f}, {bbox_w:.1f}, {bbox_h:.1f})")
-        print(f"[DEBUG CopyImage] Export scale: {export_scale:.2f}")
-        print(f"[DEBUG CopyImage] Initial crop: ({crop_x}, {crop_y}, {crop_w}, {crop_h})")
+        # print(f"[DEBUG CopyImage] Bounding box: ({bbox_x:.1f}, {bbox_y:.1f}, {bbox_w:.1f}, {bbox_h:.1f})")  # Commented out for reduced verbosity
+        # print(f"[DEBUG CopyImage] Export scale: {export_scale:.2f}")  # Commented out for reduced verbosity
+        # print(f"[DEBUG CopyImage] Initial crop: ({crop_x}, {crop_y}, {crop_w}, {crop_h})")  # Commented out for reduced verbosity
         
         # Clamp bounds
         crop_x = max(0, min(crop_x, full_image.width() - 1))
@@ -699,11 +702,11 @@ def _render_viewer_to_image(viewer, scale_factor, selection_only, fmt):
         crop_w = max(10, min(crop_w, full_image.width() - crop_x))
         crop_h = max(10, min(crop_h, full_image.height() - crop_y))
         
-        print(f"[DEBUG CopyImage] Final crop: ({crop_x}, {crop_y}, {crop_w}, {crop_h})")
-        
+        # print(f"[DEBUG CopyImage] Final crop: ({crop_x}, {crop_y}, {crop_w}, {crop_h})")  # Commented out for reduced verbosity
+
         # For 2D, return full image (cropping is causing issues)
         if not is_3d:
-            print(f"[DEBUG CopyImage] Returning full 2D image")
+            # print(f"[DEBUG CopyImage] Returning full 2D image")  # Commented out for reduced verbosity
             return full_image
         else:
             return full_image.copy(crop_x, crop_y, crop_w, crop_h)

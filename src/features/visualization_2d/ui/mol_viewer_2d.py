@@ -124,6 +124,11 @@ class MolViewer2D(QWidget):
         self._dragged_atom_idx = None   # Index of atom being dragged
         self._drag_start_pos = None     # Starting screen position of drag
 
+        # Explicit H atom drag state for heteroatom H repositioning
+        self._is_dragging_h = False     # True while dragging an explicit H
+        self._dragged_h_key = None      # (parent_idx, h_idx) tuple for dragged H
+        self._dragged_h_parent_pos = None  # Screen position of parent atom
+
         # Export state (set during export_image calls)
         self._original_scale = None    # Pre-export scale for font sizing
 
@@ -170,6 +175,9 @@ class MolViewer2D(QWidget):
         else:
             self.coords_2d = {}
 
+        # Clear custom H angles when loading new molecule
+        self._atom_renderer.clear_explicit_h_angles()
+
         self._auto_fit()
         self.update()
 
@@ -177,6 +185,7 @@ class MolViewer2D(QWidget):
         self.molecule = None
         self.coords_2d = {}
         self.selected_atoms = set()
+        self._atom_renderer.clear_explicit_h_angles()
         self.update()
 
     def set_selected(self, atom_indices):
@@ -239,12 +248,12 @@ class MolViewer2D(QWidget):
             # Layer 1: Bonds
             self._bond_renderer.draw_all_bonds(painter, visible, has_label)
 
-            # Layer 2: Atom labels
-            self._atom_renderer.draw_all_labels(painter, visible, has_label)
-
-            # Layer 3: Selection
+            # Layer 2: Selection (draw before labels so circles are visible)
             if self.selected_atoms:
                 self._draw_selection(painter, visible)
+
+            # Layer 3: Atom labels
+            self._atom_renderer.draw_all_labels(painter, visible, has_label)
 
             # Layer 4: Distance / angle measurement overlay
             if len(self.selected_atoms) in (2, 3):
@@ -317,7 +326,7 @@ class MolViewer2D(QWidget):
                 continue
             mx, my = self.coords_2d[idx]
             sx, sy = self._to_screen(mx, my)
-            r = self._scale * 0.28
+            r = self._scale * 0.40  # Increased from 0.28 to be visible beyond label backgrounds
 
             # Outer glow
             pen = QPen(QColor(255, 200, 50, 140), max(2.5, self._scale * 0.045))
@@ -582,30 +591,54 @@ class MolViewer2D(QWidget):
                 self._drag_start_pos = event.position()
                 if _DEBUG:
                     print(f"[DEBUG 2D] Started dragging atom {atom_idx}")
+                return
+
+            # Check for explicit H atom hit (for heteroatoms like N, O, S, P)
+            h_key = self._atom_renderer.hit_test_explicit_h(event.position())
+            if h_key is not None:
+                # Start dragging the explicit H atom
+                self._is_dragging_h = True
+                self._dragged_h_key = h_key
+                self._drag_start_pos = event.position()
+                # Get parent position for reference
+                h_data = self._atom_renderer.get_explicit_h_data(h_key)
+                if h_data:
+                    self._dragged_h_parent_pos = QPointF(h_data[2], h_data[3])
+                if _DEBUG:
+                    print(f"[DEBUG 2D] Started dragging H atom {h_key}")
 
     def mouseMoveEvent(self, event):
-        """Handle mouse move: pan, atom drag, update rubber-band, or hover."""
+        """Handle mouse move: pan, atom drag, H atom repositioning, update rubber-band, or hover."""
+        # Explicit H atom dragging - rotate H around parent atom
+        if self._is_dragging_h and self._dragged_h_key is not None:
+            # Update H position based on mouse position (rotates around parent)
+            self._atom_renderer.update_h_position(
+                self._dragged_h_key[0], self._dragged_h_key[1], event.position())
+            self._last_mouse_pos = event.position()
+            self.update()
+            return
+
         # Atom dragging - update atom position in molecule coordinates
         if self._is_dragging_atom and self._dragged_atom_idx is not None:
             if self._dragged_atom_idx in self.coords_2d:
                 # Convert screen delta to molecule coordinates
                 dx_screen = event.position().x() - self._last_mouse_pos.x()
                 dy_screen = event.position().y() - self._last_mouse_pos.y()
-                
+
                 # Convert screen pixels to molecule units
                 dx_mol = dx_screen / self._scale
                 dy_mol = -dy_screen / self._scale  # Y is inverted in screen coords
-                
+
                 # Update atom position
                 x, y = self.coords_2d[self._dragged_atom_idx]
                 self.coords_2d[self._dragged_atom_idx] = [x + dx_mol, y + dy_mol]
-                
+
                 # Update atom's cached coordinates
                 atom = self.molecule.get_atom(self._dragged_atom_idx)
                 if atom:
                     atom.x2d = x + dx_mol
                     atom.y2d = y + dy_mol
-                
+
                 self._last_mouse_pos = event.position()
                 self.update()
             return
@@ -637,6 +670,19 @@ class MolViewer2D(QWidget):
 
     def mouseReleaseEvent(self, event):
         """Handle mouse release: end drag, commit selection, or deselect on click."""
+        # --- Finish H atom dragging ---
+        if self._is_dragging_h and event.button() == Qt.MouseButton.LeftButton:
+            if _DEBUG:
+                print(f"[DEBUG 2D] Finished dragging H atom {self._dragged_h_key}")
+            self._is_dragging_h = False
+            self._dragged_h_key = None
+            self._dragged_h_parent_pos = None
+            self._drag_start_pos = None
+            self._last_mouse_pos = None
+            self._mouse_button = None
+            self.update()
+            return
+
         # --- Finish atom dragging ---
         if self._is_dragging_atom and event.button() == Qt.MouseButton.LeftButton:
             if _DEBUG:
