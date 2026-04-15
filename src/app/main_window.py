@@ -447,6 +447,10 @@ class MainWindow(QMainWindow):
     def _deselect_all(self):
         _mol_ctrl.deselect_all(self)
 
+    def _copy_as_image(self):
+        """Copy current view as image to clipboard."""
+        _file_ops.copy_as_image(self)
+
     def _show_substructure_dialog(self):
         _mol_ctrl.show_substructure_dialog(self)
 

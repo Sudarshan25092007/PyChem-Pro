@@ -103,6 +103,14 @@ def _build_edit_menu(window, menu_bar):
 
     edit_menu.addSeparator()
 
+    copy_image_action = QAction("&Copy as Image...", window)
+    copy_image_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
+    copy_image_action.triggered.connect(window._copy_as_image)
+    edit_menu.addAction(copy_image_action)
+    window._copy_image_action = copy_image_action
+
+    edit_menu.addSeparator()
+
     deselect_action = QAction("Deselect &All", window)
     deselect_action.setShortcut(QKeySequence("Escape"))
     deselect_action.triggered.connect(window._deselect_all)

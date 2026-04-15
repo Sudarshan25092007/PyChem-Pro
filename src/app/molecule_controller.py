@@ -189,6 +189,10 @@ def set_molecule(window, molecule):
     window.aromaticity_action.setEnabled(True)
     for action in window.tools_submenu_actions:
         action.setEnabled(True)
+    
+    # Enable Copy as Image action
+    if hasattr(window, '_copy_image_action'):
+        window._copy_image_action.setEnabled(True)
 
 
 # ── Delete / Undo / Close ────────────────────────────────────────
@@ -259,6 +263,10 @@ def close_molecule(window):
     window.viewer_2d.selected_atoms.clear()
     window.viewer_3d.clear()
     window.viewer_2d.clear()
+    
+    # Disable Copy as Image action
+    if hasattr(window, '_copy_image_action'):
+        window._copy_image_action.setEnabled(False)
 
     if hasattr(window, 'console') and window.console:
         window.console.set_molecule(None)
