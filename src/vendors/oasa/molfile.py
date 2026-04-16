@@ -96,15 +96,15 @@ class molfile( plugin):
 
   def _read_property( self, prop):
     import re
-    m = re.match( "M\s+RAD\s+(\d+)(.*)", prop)
+    m = re.match( r"M\s+RAD\s+(\d+)(.*)", prop)
     if m:
-      for at,rad in re.findall( "(\d+)\s+(\d+)", m.group( 2)):
+      for at,rad in re.findall( r"(\d+)\s+(\d+)", m.group( 2)):
         index = int( at)
         multi = int( rad)
         self.structure.vertices[index-1].multiplicity = multi
-    m = re.match( "M\s+CHG\s+(\d+)(.*)", prop)
+    m = re.match( r"M\s+CHG\s+(\d+)(.*)", prop)
     if m:
-      for at,chg in re.findall( "(\d+)\s+(-?\d+)", m.group( 2)):
+      for at,chg in re.findall( r"(\d+)\s+(-?\d+)", m.group( 2)):
         index = int( at)
         charge = int( chg)
         self.structure.vertices[index-1].charge = charge

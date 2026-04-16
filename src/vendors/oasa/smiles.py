@@ -96,7 +96,7 @@ class smiles( plugin):
     # internally revert \/ bonds before numbers, this makes further processing much easier
     text = re.sub( r"([\\/])([0-9])", lambda m: (m.group(1)=="/" and "\\" or "/")+m.group(2), text)
     # // end
-    chunks = re.split( "(\[.*?\]|[A-Z][a-z]?|%[0-9]{1,2}|[^A-Z]|[a-z])", text)
+    chunks = re.split( r"(\[.*?\]|[A-Z][a-z]?|%[0-9]{1,2}|[^A-Z]|[a-z])", text)
     chunks = self._check_the_chunks( chunks)
     last_atom = None
     last_bond = None
@@ -192,7 +192,7 @@ class smiles( plugin):
   def _parse_atom_spec( self, c, a):
     """c is the text spec,
     a is an empty prepared vertex (atom) instance"""
-    bracketed_atom = re.compile("^\[(\d*)([A-z][a-z]?)(.*?)\]")
+    bracketed_atom = re.compile(r"^\[(\d*)([A-z][a-z]?)(.*?)\]")
     m = bracketed_atom.match( c)
     if m:
       isotope, symbol, rest = m.groups()
@@ -205,7 +205,7 @@ class smiles( plugin):
     if isotope:
       a.isotope = int( isotope)
     # hydrogens
-    _hydrogens = re.search( "H(\d*)", rest)
+    _hydrogens = re.search( r"H(\d*)", rest)
     h_count = 0
     if _hydrogens:
       if _hydrogens.group(1):
@@ -223,7 +223,7 @@ class smiles( plugin):
         charge *= -1
     # second one, only if the first one failed
     else:
-      _charge = re.search( "([-+])(\d?)", rest)
+      _charge = re.search( r"([-+])(\d?)", rest)
       if _charge:
         if _charge.group(2):
           charge = int( _charge.group(2))

@@ -116,7 +116,7 @@ class query_atom( chem_vertex):
 
 
   def is_query_definition( self, text):
-    matcher = re.compile( "\[([A-Z][a-z]?,)*[A-Z][a-z]?\]")
+    matcher = re.compile( r"\[([A-Z][a-z]?,)*[A-Z][a-z]?\]")
     return matcher.match( text) and True or False
 
   is_query_definition = classmethod( is_query_definition)
