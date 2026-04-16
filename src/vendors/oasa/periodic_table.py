@@ -343,12 +343,12 @@ def formula_to_composition( formula):
 ## other support functions
 
 def text_to_hydrogenated_atom( text):
-  a = re.match( '^([a-z]{1,2})(h)(\d*)$', text.lower())
+  a = re.match( r'^([a-z]{1,2})(h)(\d*)$', text.lower())
   if a:
     atom = a.group( 1)
     hydrogens = a.group( 3)
   else:
-    a = re.match( '^(h)(\d*)([a-z]{1,2})$', text.lower())
+    a = re.match( r'^(h)(\d*)([a-z]{1,2})$', text.lower())
     if a:
       atom = a.group( 3)
       hydrogens = a.group( 2)

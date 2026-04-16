@@ -77,7 +77,7 @@ def childNodesWithoutEmptySpaces( node):
   return filter( isNotEmptyText, node.childNodes)
 
 def isNotEmptyText( element):
-  empty = re.compile('^\s*$')
+  empty = re.compile(r'^\s*$')
   if element.nodeValue and empty.match( element.nodeValue): #(element.nodeValue == '\n') or (element.nodeValue == '\t'):
     return 0
   else:
