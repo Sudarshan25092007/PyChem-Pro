@@ -23,9 +23,20 @@ class ConversionWorker(QObject):
             mol = parse_smiles(self.smiles, use_bkchem_tokenizer=True)
             self.progress.emit(30)
 
-            # Generate 3D coordinates
-            from src.features.layout_3d import generate_3d_coordinates
-            generate_3d_coordinates(mol, optimize=True, max_opt_steps=100)
+            # Generate 2D coordinates using OASA
+            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+            generator = CoordinateGenerator2DSMILES(mol)
+            coords_2d = generator.generate()
+
+            # Map coordinates to a flat 3D representation (z=0)
+            for atom in mol.atoms:
+                if atom.index in coords_2d:
+                    x, y = coords_2d[atom.index]
+                    atom.x = float(x)
+                    atom.y = float(y)
+                    atom.z = 0.0
+                else:
+                    atom.x, atom.y, atom.z = 0.0, 0.0, 0.0
             self.progress.emit(70)
 
             # Compute charges

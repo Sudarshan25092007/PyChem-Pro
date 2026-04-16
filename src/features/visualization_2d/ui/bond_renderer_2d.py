@@ -50,8 +50,8 @@ class BondRenderer2D:
                 nx, ny = dx / dist, dy / dist
 
                 # Shrink amount based on font metrics and bond direction
-                shrink1 = self._label_shrink(i, has_label, dx, dy)
-                shrink2 = self._label_shrink(j, has_label, -dx, -dy)
+                shrink1 = self._label_shrink(i, has_label, dx, dy, painter)
+                shrink2 = self._label_shrink(j, has_label, -dx, -dy, painter)
 
                 if dist > (shrink1 + shrink2 + 4):
                     bx1, by1 = x1 + nx * shrink1, y1 + ny * shrink1
@@ -72,7 +72,7 @@ class BondRenderer2D:
 
     # ─── Label shrink helper ──────────────────────────────────────
 
-    def _label_shrink(self, idx, has_label, vx=0, vy=0):
+    def _label_shrink(self, idx, has_label, dx, dy, painter):
         """Compute how much to shrink bonds near labeled atoms.
         
         Uses RenderingConfig for consistent spacing and direction-aware logic
@@ -85,21 +85,25 @@ class BondRenderer2D:
         
         parts = v._atom_renderer._label_parts(atom)
         font = v._atom_renderer._get_font()
-        from src.shared.qt_compat import QFontMetrics
-        fm = QFontMetrics(font)
+        sub_font = v._atom_renderer._get_subscript_font()
+
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        painter.setFont(sub_font)
+        fm_sub = painter.fontMetrics()
         
         if not parts:
             return v._label_padding
             
         first_text, _ = parts[0]
-        first_w = fm.horizontalAdvance(first_text)
+        first_w = fm.horizontalAdvance(first_text) if not parts[0][1] else fm_sub.horizontalAdvance(first_text)
         
         from .rendering_config import RenderingConfig
         char_gap, sub_gap, export_factor = RenderingConfig.get_gaps(v)
 
         total_w = 0
         for i, (text, is_sub) in enumerate(parts):
-            m = QFontMetrics(v._atom_renderer._get_subscript_font() if is_sub else font)
+            m = fm_sub if is_sub else fm
             total_w += m.horizontalAdvance(text)
             if i > 0:
                 total_w += sub_gap if is_sub else (char_gap if not parts[i-1][1] else 0)
@@ -107,12 +111,31 @@ class BondRenderer2D:
         scaled_padding = int(v._label_padding * export_factor)
         h_offset = RenderingConfig.get_h_offset(export_factor)
 
-        if vx > 0:
-            # Bond leaves to the right: shift moves label closer/further
-            return (total_w - first_w / 2 + scaled_padding) - h_offset
+        if dx > 0:
+            # Bond leaves to the right
+            clear_x = (total_w - first_w / 2 + scaled_padding) - h_offset
         else:
-            # Bond leaves to the left: shift moves symbol closer/further
-            return (first_w / 2 + scaled_padding) + h_offset
+            # Bond leaves to the left
+            clear_x = (first_w / 2 + scaled_padding) + h_offset
+
+        # Approximate vertical clearance
+        clear_y = fm.height() / 2.0 + scaled_padding
+
+        dist = math.hypot(dx, dy)
+        if dist < 0.001:
+            return 0
+
+        if abs(dx) > 0.001:
+            t_x = clear_x * dist / abs(dx)
+        else:
+            t_x = float('inf')
+
+        if abs(dy) > 0.001:
+            t_y = clear_y * dist / abs(dy)
+        else:
+            t_y = float('inf')
+
+        return min(t_x, t_y)
 
     # ─── Single bond ──────────────────────────────────────────────
 

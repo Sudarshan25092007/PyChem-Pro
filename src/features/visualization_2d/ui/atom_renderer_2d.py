@@ -94,8 +94,12 @@ class AtomRenderer2D:
         v = self._v
         font = self._get_font()
         sub_font = self._get_subscript_font()
-        fm = QFontMetrics(font)
-        fm_sub = QFontMetrics(sub_font)
+        
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        
+        painter.setFont(sub_font)
+        fm_sub = painter.fontMetrics()
 
         from .rendering_config import RenderingConfig
         char_gap, sub_gap, export_factor = RenderingConfig.get_gaps(v)
@@ -133,8 +137,10 @@ class AtomRenderer2D:
             cx = sx - first_w / 2 + RenderingConfig.get_h_offset(export_factor)
             
             # Draw background rectangle aligned with the actual text layout
-            bg_rect = QRectF(cx - pad, sy - h / 2 - 2,
-                             total_w + pad * 2, h + 4)
+            # Use tighter padding to prevent covering bonds (especially terminal CH3)
+            bg_pad = max(1, int(1.5 * export_factor))
+            bg_rect = QRectF(cx - bg_pad, sy - h / 2,
+                             total_w + bg_pad * 2, h + 1)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(v.bg_color))
             painter.drawRect(bg_rect)
