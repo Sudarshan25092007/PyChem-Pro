@@ -7,30 +7,31 @@ template-growth engine (used during SMILES parsing) which is far more
 robust than standalone coordinate generation.
 """
 
-from src.vendors.oasa_bridge import domain_to_oasa_mol
+from src.vendors.oasa_bridge import domain_to_oasa_mol, oasa_prepare_for_layout
 import src.vendors.oasa.smiles as oasa_smiles
 import src.vendors.oasa.coords_generator as oasa_cg
 
 def generate_golden_layout(molecule):
     """
     Generate professional 2D coordinates using the SMILES roundtrip method.
-    
+
     Args:
         molecule: Domain molecule object.
-        
+
     Returns:
         dict: {atom_index: [x, y]} for the input molecule.
     """
     if not molecule or not molecule.atoms:
         return {}
-        
-    # 1. Convert Domain -> OASA (O1)
+
+    # 1. Convert Domain -> OASA (O1) and kekulize before SMILES/layout
     o1_mol, atom_map = domain_to_oasa_mol(molecule)
-    
+    oasa_prepare_for_layout(o1_mol)
+
     # 2. Derive SMILES from O1
     # We use a dedicated smiles instance to capture the atom processing order
     sm_engine = oasa_smiles.smiles()
-    
+
     # We must ensure the molecule is connected for standard SMILES
     if not o1_mol.is_connected():
         # Fallback to standard OASA calculation if disconnected (salts, etc.)
@@ -83,7 +84,10 @@ def generate_golden_layout(molecule):
         
     except Exception as e:
         print(f"[DEBUG] Golden Layout failed: {e}. Falling back to standard OASA.")
-        # Final fallback - standard coordinate generation
+        # Final fallback - standard coordinate generation. The prep helper
+        # was already applied above before the SMILES generation attempt,
+        # so OASA here also sees a kekulized skeleton and produces a
+        # clean, deterministic layout.
         oasa_cg.calculate_coords(o1_mol, bond_length=1.0, force=1)
         coords = {}
         for idx, v in atom_map.items():

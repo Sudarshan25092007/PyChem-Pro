@@ -24,8 +24,8 @@ try:
         QGraphicsTextItem, QGraphicsItemGroup, QGraphicsProxyWidget
     )
     from PySide6.QtCore import Qt, QThread, Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication
-    from PySide6.QtGui import QAction, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent
-    
+    from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette
+
     QT_FRAMEWORK = "PySide6"
     print("Using PySide6 framework")
     
@@ -48,8 +48,8 @@ except ImportError as e:
             QGraphicsTextItem, QGraphicsItemGroup, QGraphicsProxyWidget
         )
         from PyQt6.QtCore import Qt, QThread, pyqtSignal as Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication
-        from PyQt6.QtGui import QAction, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent
-        
+        from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette
+
         QT_FRAMEWORK = "PyQt6"
         print("Using PyQt6 framework (PySide6 failed)")
         
@@ -814,8 +814,8 @@ __all__ = [
     'QTreeWidgetItem', 'QTextEdit', 'QProgressBar', 'QSpinBox',
     'QDoubleSpinBox', 'QTableWidget', 'QTableWidgetItem', 'QHeaderView',
     'QScrollArea', 'QGridLayout', 'QRadioButton', 'QButtonGroup',
-    'Qt', 'QThread', 'Signal', 'QObject', 'QSettings', 'QAction', 
-    'QKeySequence', 'QFont', 'QIcon', 'QPixmap', 'QTimer', 'QT_FRAMEWORK',
+    'Qt', 'QThread', 'Signal', 'QObject', 'QSettings', 'QAction', 'QActionGroup',
+    'QKeySequence', 'QFont', 'QIcon', 'QPixmap', 'QPalette', 'QTimer', 'QT_FRAMEWORK',
     'QPainter', 'QColor', 'QPen', 'QBrush', 'QWheelEvent',
     'QRadialGradient', 'QLinearGradient', 'QImage', 'QConicalGradient', 
     'QPainterPath', 'QPointF', 'QRectF', 'QFontMetrics', 'QSizePolicy',

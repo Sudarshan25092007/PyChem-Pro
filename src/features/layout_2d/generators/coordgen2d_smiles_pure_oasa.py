@@ -105,8 +105,8 @@ class CoordinateGenerator2DSMILES:
         self.molecule = molecule
         self.coords = {}
         self.force_regenerate = force_regenerate
-        
-        print(f"[DEBUG SMILES] Initialized OASA-based generator for {len(molecule.atoms) if molecule else 0} atoms")
+
+        # print(f"[DEBUG SMILES] Initialized OASA-based generator for {len(molecule.atoms) if molecule else 0} atoms")  # Commented out for reduced verbosity
     
     def generate(self):
         """
@@ -123,34 +123,39 @@ class CoordinateGenerator2DSMILES:
             5. Layout refinement
         """
         if not self.molecule or len(self.molecule.atoms) == 0:
-            print("[DEBUG SMILES] No molecule or atoms to process")
+            # print("[DEBUG SMILES] No molecule or atoms to process")  # Commented out for reduced verbosity
             return {}
         
         # Step 1: Check for existing coordinates
         if not self.force_regenerate:
-            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None 
+            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None
                            for a in self.molecule.atoms if a.symbol != 'H')
             if has_coords:
-                print("[DEBUG SMILES] Using existing coordinates")
+                # print("[DEBUG SMILES] Using existing coordinates")  # Commented out for reduced verbosity
                 self.coords = {a.index: [a.x2d * self.BOND_LENGTH, a.y2d * self.BOND_LENGTH] 
                               for a in self.molecule.atoms}
                 self._center_coords()
                 return self.coords
         
         # Step 2: Enhanced molecule preprocessing for OASA
-        print("[DEBUG SMILES] Enhanced molecule preprocessing...")
+        # print("[DEBUG SMILES] Enhanced molecule preprocessing...")  # Commented out for reduced verbosity
         o_mol, atom_map = self._preprocess_molecule_for_oasa()
-        
+
         # Step 3: Pure OASA coordinate generation
-        print("[DEBUG SMILES] Pure OASA coordinate generation...")
+        # print("[DEBUG SMILES] Pure OASA coordinate generation...")  # Commented out for reduced verbosity
         self._generate_oasa_coordinates(o_mol, atom_map)
-        
-        # Step 4: Virtual hydrogen placement
-        print("[DEBUG SMILES] Virtual hydrogen placement...")
+
+        # Step 4: Place explicit hydrogen atoms (those skipped by domain_to_oasa_mol)
+        # print(f"[DEBUG SMILES] Placing explicit hydrogen atoms... (have {len(self.coords)} coords so far)")  # Commented out for reduced verbosity
+        self._place_explicit_hydrogens()
+        # print(f"[DEBUG SMILES] After explicit H placement: {len(self.coords)} total coordinates")  # Commented out for reduced verbosity
+
+        # Step 5: Virtual hydrogen placement (for implicit H only)
+        # print("[DEBUG SMILES] Virtual hydrogen placement...")  # Commented out for reduced verbosity
         self._place_virtual_hydrogens()
-        
+
         # Step 5: Layout refinement
-        print("[DEBUG SMILES] Layout refinement...")
+        # print("[DEBUG SMILES] Layout refinement...")  # Commented out for reduced verbosity
         self._refine_layout()
         
         # Step 6: Center coordinates
@@ -163,7 +168,7 @@ class CoordinateGenerator2DSMILES:
         total = len(self.coords)
         real = sum(1 for idx in self.coords if idx >= 0)
         virtual = sum(1 for idx in self.coords if idx < 0)
-        print(f"[DEBUG SMILES] Generated {total} coordinates ({real} real + {virtual} virtual H)")
+        # print(f"[DEBUG SMILES] Generated {total} coordinates ({real} real + {virtual} virtual H)")  # Commented out for reduced verbosity
         
         return self.coords
     
@@ -186,29 +191,37 @@ class CoordinateGenerator2DSMILES:
         try:
             # Force ring system detection
             cycles = o_mol.get_smallest_independent_cycles()
-            print(f"[DEBUG SMILES] Detected {len(cycles)} ring systems")
+            # print(f"[DEBUG SMILES] Detected {len(cycles)} ring systems")  # Commented out for reduced verbosity
             
             # Mark aromatic rings for better handling
-            for cycle in cycles:
-                is_aromatic = True
-                for atom_idx in cycle:
-                    if hasattr(o_mol.get_vertex(atom_idx), 'symbol'):
-                        symbol = o_mol.get_vertex(atom_idx).symbol
-                        if symbol not in ['C', 'N', 'O', 'S', 'P']:
-                            is_aromatic = False
-                            break
-                
-                if is_aromatic:
-                    # Mark as aromatic system
+            try:
+                vertices = list(o_mol.vertices)
+                for cycle in cycles:
+                    is_aromatic = True
                     for atom_idx in cycle:
-                        vertex = o_mol.get_vertex(atom_idx)
-                        if hasattr(vertex, 'aromatic'):
-                            vertex.aromatic = True
-            
-            print("[DEBUG SMILES] Enhanced ring perception completed")
-            
+                        if atom_idx < len(vertices):
+                            vertex = vertices[atom_idx]
+                            symbol = getattr(vertex, 'symbol', '')
+                            if symbol not in ['C', 'N', 'O', 'S', 'P']:
+                                is_aromatic = False
+                                break
+                    
+                    if is_aromatic:
+                        # Mark as aromatic system
+                        for atom_idx in cycle:
+                            if atom_idx < len(vertices):
+                                vertex = vertices[atom_idx]
+                                if hasattr(vertex, 'aromatic'):
+                                    vertex.aromatic = True
+
+                # print("[DEBUG SMILES] Enhanced ring perception completed")  # Commented out for reduced verbosity
+            except Exception as e:
+                # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
+                pass
+
         except Exception as e:
-            print(f"[DEBUG SMILES] Ring perception warning: {e}")
+            # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
+            pass
         
         # Normalize bond orders for OASA
         for edge in o_mol.edges:
@@ -251,11 +264,15 @@ class CoordinateGenerator2DSMILES:
             else:
                 missing_atoms.append(internal_idx)
         
-        print(f"[DEBUG SMILES] OASA placed {len(self.coords)} heavy atoms")
+        # print(f"[DEBUG SMILES] OASA placed {len(self.coords)} atoms, {len(missing_atoms)} missing")  # Commented out for reduced verbosity
         
-        # Handle missing atoms using OASA's approach
+        # Handle missing atoms - ensure ALL atoms get coordinates
         if missing_atoms:
-            self._place_missing_atoms_oasa_style(missing_atoms)
+            placed = self._place_missing_atoms_oasa_style(missing_atoms)
+            # If still missing atoms, place them in a circle around center
+            still_missing = [idx for idx in missing_atoms if idx not in self.coords]
+            if still_missing:
+                self._place_remaining_in_circle(still_missing)
     
     def _place_missing_atoms_oasa_style(self, missing_atoms):
         """
@@ -263,63 +280,138 @@ class CoordinateGenerator2DSMILES:
         
         This follows OASA's methodology for placing atoms that
         the main algorithm failed to coordinate.
+        
+        Returns:
+            int: Number of atoms successfully placed
         """
         placed = 0
         
         for atom_idx in missing_atoms:
+            # Skip if already placed
+            if atom_idx in self.coords:
+                continue
+                
             # Find neighbors with coordinates
             neighbor_positions = []
-            neighbor_indices = []
             
             for bond in self.molecule.bonds:
                 if bond.begin_atom_idx == atom_idx and bond.end_atom_idx in self.coords:
-                    neighbor_positions.append(self.coords[bond.end_atom_idx])
-                    neighbor_indices.append(bond.end_atom_idx)
+                    nx, ny = self.coords[bond.end_atom_idx]
+                    neighbor_positions.append((nx, ny))
                 elif bond.end_atom_idx == atom_idx and bond.begin_atom_idx in self.coords:
-                    neighbor_positions.append(self.coords[bond.begin_atom_idx])
-                    neighbor_indices.append(bond.begin_atom_idx)
+                    nx, ny = self.coords[bond.begin_atom_idx]
+                    neighbor_positions.append((nx, ny))
             
             if len(neighbor_positions) == 1:
-                # Single neighbor - place opposite to bond
+                # Single neighbor - place opposite to bond direction
                 nx, ny = neighbor_positions[0]
                 angle = math.atan2(ny, nx) + math.pi
-                x = self.BOND_LENGTH * math.cos(angle)
-                y = self.BOND_LENGTH * math.sin(angle)
+                x = nx + self.BOND_LENGTH * math.cos(angle)
+                y = ny + self.BOND_LENGTH * math.sin(angle)
                 self.coords[atom_idx] = [x, y]
                 placed += 1
                 
             elif len(neighbor_positions) >= 2:
-                # Multiple neighbors - place in largest gap
+                # Multiple neighbors - place in largest angular gap
+                # Calculate angles from the centroid of neighbors
+                cx = sum(nx for nx, ny in neighbor_positions) / len(neighbor_positions)
+                cy = sum(ny for nx, ny in neighbor_positions) / len(neighbor_positions)
+                
                 angles = []
                 for nx, ny in neighbor_positions:
-                    angles.append(math.atan2(ny, nx))
+                    angles.append(math.atan2(ny - cy, nx - cx))
                 
                 angles.sort()
                 angles.append(angles[0] + 2 * math.pi)  # Close the circle
                 
                 # Find largest angle gap
                 max_gap = 0
-                best_angle = 0
+                best_angle = angles[0] + math.pi  # Default: opposite to first neighbor
                 for i in range(len(angles) - 1):
                     gap = angles[i + 1] - angles[i]
                     if gap > max_gap:
                         max_gap = gap
                         best_angle = angles[i] + gap / 2
                 
-                x = self.BOND_LENGTH * math.cos(best_angle)
-                y = self.BOND_LENGTH * math.sin(best_angle)
+                x = cx + self.BOND_LENGTH * math.cos(best_angle)
+                y = cy + self.BOND_LENGTH * math.sin(best_angle)
                 self.coords[atom_idx] = [x, y]
-                placed += 1
-                
-            else:
-                # Isolated atom - place in expanding circle
-                angle = atom_idx * 0.5
-                radius = 3.0 + atom_idx * 0.3
-                self.coords[atom_idx] = [radius * math.cos(angle), radius * math.sin(angle)]
                 placed += 1
         
         if placed > 0:
-            print(f"[DEBUG SMILES] Placed {placed} missing atoms OASA-style")
+            # print(f"[DEBUG SMILES] Placed {placed} missing atoms OASA-style")  # Commented out for reduced verbosity
+            pass
+
+        return placed
+    
+    def _place_remaining_in_circle(self, missing_atoms):
+        """
+        Place remaining isolated atoms in a circle around existing coordinates.
+        This is a last-resort fallback to ensure all atoms have coordinates.
+        """
+        if not self.coords:
+            # No existing coordinates - place in a circle around origin
+            for i, atom_idx in enumerate(missing_atoms):
+                angle = 2 * math.pi * i / len(missing_atoms)
+                radius = 5.0 + (i // 10) * 2.0  # Expand circle every 10 atoms
+                self.coords[atom_idx] = [radius * math.cos(angle), radius * math.sin(angle)]
+        else:
+            # Place around the centroid of existing coordinates
+            cx = sum(c[0] for c in self.coords.values()) / len(self.coords)
+            cy = sum(c[1] for c in self.coords.values()) / len(self.coords)
+            
+            for i, atom_idx in enumerate(missing_atoms):
+                angle = 2 * math.pi * i / max(len(missing_atoms), 6)
+                radius = 8.0 + (i // 5) * 2.0  # Expand circle
+                self.coords[atom_idx] = [cx + radius * math.cos(angle), cy + radius * math.sin(angle)]
+        
+        # print(f"[DEBUG SMILES] Placed {len(missing_atoms)} isolated atoms in circle arrangement")  # Commented out for reduced verbosity
+    
+    def _place_explicit_hydrogens(self):
+        """
+        Place explicit hydrogen atoms that were skipped by domain_to_oasa_mol.
+        
+        domain_to_oasa_mol skips H atoms, so explicit H atoms in the molecule
+        never get coordinates from OASA. This method finds all explicit H atoms
+        and places them near their parent heavy atoms.
+        """
+        placed = 0
+        
+        for atom in self.molecule.atoms:
+            # Skip if not hydrogen
+            if atom.symbol != 'H':
+                continue
+            # Skip if already has coordinates
+            if atom.index in self.coords:
+                continue
+            
+            # Find the heavy atom this H is bonded to
+            parent_idx = None
+            for bond in self.molecule.bonds:
+                if bond.begin_atom_idx == atom.index and bond.end_atom_idx in self.coords:
+                    parent_idx = bond.end_atom_idx
+                    break
+                elif bond.end_atom_idx == atom.index and bond.begin_atom_idx in self.coords:
+                    parent_idx = bond.begin_atom_idx
+                    break
+            
+            if parent_idx is not None:
+                px, py = self.coords[parent_idx]
+                # Place H at a slight offset from parent
+                angle = (atom.index * 0.7) % (2 * math.pi)  # Deterministic angle
+                dist = self.BOND_LENGTH * 0.9  # Slightly shorter than heavy atom bonds
+                self.coords[atom.index] = [px + dist * math.cos(angle), py + dist * math.sin(angle)]
+                placed += 1
+            else:
+                # Isolated H - place in expanding circle
+                angle = atom.index * 0.5
+                radius = 5.0 + atom.index * 0.3
+                self.coords[atom.index] = [radius * math.cos(angle), radius * math.sin(angle)]
+                placed += 1
+        
+        if placed > 0:
+            # print(f"[DEBUG SMILES] Placed {placed} explicit hydrogen atoms")  # Commented out for reduced verbosity
+            pass
     
     def _place_virtual_hydrogens(self):
         """
@@ -366,7 +458,7 @@ class CoordinateGenerator2DSMILES:
                 self.coords[virtual_h_idx] = [h_x, h_y]
                 placed_count += 1
         
-        print(f"[DEBUG SMILES] Placed {placed_count} virtual hydrogens for {total_h_needed} needed")
+        # print(f"[DEBUG SMILES] Placed {placed_count} virtual hydrogens for {total_h_needed} needed")  # Commented out for reduced verbosity
     
     def _calculate_implicit_h_count(self, atom):
         """
@@ -500,24 +592,35 @@ class CoordinateGenerator2DSMILES:
             # Convert to OASA format for optimization
             o_mol, atom_map = domain_to_oasa_mol(self.molecule)
             
-            # Set existing coordinates
+            # Check if all atoms in atom_map have valid coordinates
+            missing_coords = [idx for idx in atom_map if idx not in self.coords]
+            if missing_coords:
+                # print(f"[DEBUG SMILES] Layout refinement skipped: {len(missing_coords)} atoms missing coordinates")  # Commented out for reduced verbosity
+                return
+            
+            # Set existing coordinates on OASA molecule
             for internal_idx, o_v in atom_map.items():
-                if internal_idx in self.coords:
-                    o_v.x = self.coords[internal_idx][0]
-                    o_v.y = self.coords[internal_idx][1]
+                x, y = self.coords[internal_idx]
+                # Ensure valid numbers
+                if x is None or y is None:
+                    # print(f"[DEBUG SMILES] Layout refinement skipped: atom {internal_idx} has None coordinates")  # Commented out for reduced verbosity
+                    return
+                o_v.x = float(x)
+                o_v.y = float(y)
             
             # Run limited optimization
             converged = optimizer.optimize_coords(o_mol, bond_length=self.BOND_LENGTH)
             
-            # Read back optimized coordinates (only for real atoms)
+            # Read back optimized coordinates (only for real atoms with valid coords)
             for internal_idx, o_v in atom_map.items():
-                if o_v.x is not None and o_v.y is not None and internal_idx >= 0:
+                if internal_idx >= 0 and o_v.x is not None and o_v.y is not None:
                     self.coords[internal_idx] = [float(o_v.x), float(o_v.y)]
             
-            print(f"[DEBUG SMILES] Layout refinement: {optimizer.i} iterations, converged={converged}")
-            
+            # print(f"[DEBUG SMILES] Layout refinement: {getattr(optimizer, 'i', 0)} iterations, converged={converged}")  # Commented out for reduced verbosity
+
         except Exception as e:
-            print(f"[DEBUG SMILES] Layout refinement skipped: {e}")
+            # print(f"[DEBUG SMILES] Layout refinement skipped: {e}")  # Commented out for reduced verbosity
+            pass
     
     def _center_coords(self):
         """

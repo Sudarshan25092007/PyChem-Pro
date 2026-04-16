@@ -9,7 +9,7 @@ import sys
 import io
 import traceback
 from src.shared.qt_compat import QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QHBoxLayout, Qt, Signal, QFont, QColor, QTextCursor
-from src.shared.ui.theme import COLORS
+from src.shared.ui.theme import COLORS, theme_signals
 
 
 class PythonConsole(QWidget):
@@ -38,27 +38,22 @@ class PythonConsole(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header bar
-        header = QWidget()
-        header.setFixedHeight(26)
-        header.setStyleSheet(f"""
-            background-color: {COLORS['bg_tertiary']};
-            border-bottom: 1px solid {COLORS['border']};
-        """)
-        header_layout = QHBoxLayout(header)
+        # Header bar. Widgets are stored on self so _apply_theme()
+        # can restyle them when the user switches themes at runtime.
+        self._header = QWidget()
+        self._header.setFixedHeight(26)
+        header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(10, 0, 10, 0)
-        lbl = QLabel("Python Console")
-        lbl.setStyleSheet(f"color: {COLORS['accent2']}; font-size: 11px; font-weight: 600;")
-        header_layout.addWidget(lbl)
+        self._header_label = QLabel("Python Console")
+        header_layout.addWidget(self._header_label)
         header_layout.addStretch()
-        help_lbl = QLabel("mol = current molecule | np = numpy")
-        help_lbl.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 10px;")
-        header_layout.addWidget(help_lbl)
-        layout.addWidget(header)
+        self._header_help = QLabel("mol = current molecule  ·  np = numpy")
+        header_layout.addWidget(self._header_help)
+        layout.addWidget(self._header)
 
-        mono_font = QFont('JetBrains Mono', 10)
+        mono_font = QFont('SF Mono', 10)
         mono_font.setStyleHint(QFont.StyleHint.Monospace)
-        fallbacks = ['Cascadia Code', 'Consolas', 'Courier New']
+        fallbacks = ['JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New']
         for fb in fallbacks:
             mono_font.setFamily(fb)
 
@@ -66,49 +61,82 @@ class PythonConsole(QWidget):
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setFont(mono_font)
-        self.output.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {COLORS['bg_primary']};
-                color: {COLORS['text_primary']};
-                border: none;
-                padding: 4px 8px;
-                selection-background-color: {COLORS['accent']};
-            }}
-        """)
         self.output.setPlaceholderText("Python console ready. Type commands below.")
         layout.addWidget(self.output, 1)
 
         # Input line
-        input_container = QWidget()
-        input_container.setStyleSheet(f"background-color: {COLORS['bg_secondary']}; border-top: 1px solid {COLORS['border']};")
-        input_layout = QHBoxLayout(input_container)
+        self._input_container = QWidget()
+        input_layout = QHBoxLayout(self._input_container)
         input_layout.setContentsMargins(8, 3, 8, 3)
         input_layout.setSpacing(6)
 
-        prompt = QLabel(">>>")
-        prompt.setFont(mono_font)
-        prompt.setStyleSheet(f"color: {COLORS['accent2']}; font-weight: bold;")
-        input_layout.addWidget(prompt)
+        self._prompt_label = QLabel(">>>")
+        self._prompt_label.setFont(mono_font)
+        input_layout.addWidget(self._prompt_label)
 
         self.input_line = QLineEdit()
         self.input_line.setFont(mono_font)
-        self.input_line.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {COLORS['bg_widget']};
-                color: {COLORS['text_primary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                padding: 4px 8px;
-            }}
-            QLineEdit:focus {{
-                border-color: {COLORS['border_focus']};
-            }}
-        """)
         self.input_line.setPlaceholderText("Enter Python command...")
         self.input_line.returnPressed.connect(self._execute)
         input_layout.addWidget(self.input_line, 1)
 
-        layout.addWidget(input_container)
+        layout.addWidget(self._input_container)
+
+        # Apply theme styling to all the widgets that need inline
+        # stylesheets (header strip colours, prompt colour, etc.)
+        self._apply_theme()
+
+        # Subscribe to runtime theme changes so the console repaints
+        # when the user picks a different theme from the menu.
+        try:
+            theme_signals().theme_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+
+    def _apply_theme(self):
+        """(Re)apply theme-dependent inline stylesheets on the console."""
+        self._header.setStyleSheet(
+            f"background-color: {COLORS['bg_tertiary']};"
+            f"border-bottom: 1px solid {COLORS['border']};"
+        )
+        self._header_label.setStyleSheet(
+            f"color: {COLORS['accent']}; font-size: 11px; font-weight: 600;"
+            "background: transparent;"
+        )
+        self._header_help.setStyleSheet(
+            f"color: {COLORS['text_muted']}; font-size: 10px;"
+            "background: transparent;"
+        )
+        self.output.setStyleSheet(
+            "QTextEdit {"
+            f"  background-color: {COLORS['bg_primary']};"
+            f"  color: {COLORS['text_primary']};"
+            "   border: none;"
+            "   padding: 4px 8px;"
+            f"  selection-background-color: {COLORS['accent']};"
+            "   selection-color: #FFFFFF;"
+            "}"
+        )
+        self._input_container.setStyleSheet(
+            f"background-color: {COLORS['bg_secondary']};"
+            f"border-top: 1px solid {COLORS['border']};"
+        )
+        self._prompt_label.setStyleSheet(
+            f"color: {COLORS['accent']}; font-weight: bold;"
+            "background: transparent;"
+        )
+        self.input_line.setStyleSheet(
+            "QLineEdit {"
+            f"  background-color: {COLORS['bg_widget']};"
+            f"  color: {COLORS['text_primary']};"
+            f"  border: 1px solid {COLORS['border']};"
+            "   border-radius: 6px;"
+            "   padding: 6px 10px;"
+            "}"
+            "QLineEdit:focus {"
+            f"  border-color: {COLORS['accent']};"
+            "}"
+        )
 
     def _init_namespace(self):
         """Set up the console namespace with useful imports and helpers."""
