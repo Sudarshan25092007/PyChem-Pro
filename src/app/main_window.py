@@ -802,6 +802,8 @@ class MainWindow(QMainWindow):
             "</ul>"
             "<p>Built entirely without external cheminformatics libraries.</p>"
             "<p>Developed by Dr. Vijay Masand, Mr. Gaurav Masand, and Mr. Krish Masand.</p>"
+            "<p>Support us by giving it a Star on GitHub to help others find it.</p>"
+            "<p>We need financial support, please consider donating at <a href='https://buymeacoffee.com/vijaymasand'>https://buymeacoffee.com/vijaymasand</a>.</p>"
         )
 
     # ── Window events ────────────────────────────────────────────
