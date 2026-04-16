@@ -15,13 +15,14 @@ class RenderingConfig:
         export_factor = v._scale / base_scale if base_scale > 0 else 1.0
         
         if is_export:
-            # Keep export gaps stable as they were verified as "perfect"
-            char_gap = max(11, int(9 * export_factor))
-            sub_gap = max(9, int(8 * export_factor))
+            # Since true DPI-scaled font metrics are now used, we only need
+            # a minimal structural gap (1-2px scaled) to separate C, H, and 3.
+            char_gap = max(2, int(2.5 * export_factor))
+            sub_gap = max(1, int(1.5 * export_factor))
         else:
-            # Decreased on-screen gaps for a tighter, cleaner look
-            char_gap = max(3, int(v._scale * 0.07))
-            sub_gap = max(2, int(v._scale * 0.05))
+            # Minimal on-screen gaps for tightly packed labels like CH3.
+            char_gap = max(1, int(v._scale * 0.03))
+            sub_gap = max(1, int(v._scale * 0.02))
             
         return char_gap, sub_gap, export_factor
 
