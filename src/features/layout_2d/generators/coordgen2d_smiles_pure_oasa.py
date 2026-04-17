@@ -154,9 +154,15 @@ class CoordinateGenerator2DSMILES:
         # print("[DEBUG SMILES] Virtual hydrogen placement...")  # Commented out for reduced verbosity
         self._place_virtual_hydrogens()
 
-        # Step 5: Layout refinement
-        # print("[DEBUG SMILES] Layout refinement...")  # Commented out for reduced verbosity
-        self._refine_layout()
+        # Step 5: Layout refinement — DISABLED
+        # OASA's coordinate generator already produces publication-quality
+        # layouts.  The optimizer was actively distorting ring geometries for
+        # Kekulized inputs (SDF files) even after ring-bond normalization,
+        # because the optimizer creates a *second* OASA molecule from the
+        # domain model and re-applies its own bond-length targets.
+        # Skipping it preserves the perfect regular-polygon ring geometry
+        # produced by the coordinate generator.
+        # self._refine_layout()
         
         # Step 6: Center coordinates
         self._center_coords()
@@ -172,65 +178,55 @@ class CoordinateGenerator2DSMILES:
         
         return self.coords
     
+    @staticmethod
+    def _normalize_ring_bonds_for_layout(o_mol):
+        """Normalize ALL ring bonds to aromatic=True, order=1 for OASA layout.
+
+        OASA's coordinate generator and optimizer use bond orders to compute
+        ideal bond lengths and angles.  When a file format stores Kekulized
+        structures (e.g. SDF with alternating single/double), the varying
+        orders cause the geometric solver to assign asymmetric bond-length
+        targets inside rings, producing visibly distorted polygons.
+
+        Setting every ring bond to ``aromatic=True, order=1`` tells OASA to
+        treat each ring as a regular polygon with uniform edge lengths —
+        exactly what MOL2's native aromatic bond type achieves.
+
+        This must be applied to **every** OASA molecule graph that will be
+        fed to ``coords_generator`` or ``coords_optimizer`` so that both
+        the initial layout and the refinement pass see consistent ring
+        geometry.
+        """
+        try:
+            cycles = o_mol.get_smallest_independent_cycles()
+            for cycle in cycles:
+                cycle_list = list(cycle)
+                for i in range(len(cycle_list)):
+                    for j in range(i + 1, len(cycle_list)):
+                        v1 = cycle_list[i]
+                        v2 = cycle_list[j]
+                        for e in o_mol.edges:
+                            if v1 in e.vertices and v2 in e.vertices:
+                                e.aromatic = True
+                                e.order = 1
+        except Exception:
+            pass
+
+        # Ensure all edges have at least a single bond order
+        for edge in o_mol.edges:
+            if hasattr(edge, 'order') and edge.order is None:
+                edge.order = 1
+
     def _preprocess_molecule_for_oasa(self):
         """
         Enhanced molecule preprocessing for optimal OASA performance.
-        
-        This method prepares the molecule for OASA's coordinate generation
-        with SMILES-specific optimizations:
-        
-        1. Enhanced ring perception
-        2. Aromatic system identification
-        3. Bond order normalization
-        4. Stereochemistry preparation
+
+        Converts the domain molecule to an OASA graph and normalizes
+        ring bond orders so that OASA's coordinate generator treats
+        every ring as a regular polygon (uniform edge lengths).
         """
-        # Convert to OASA format
         o_mol, atom_map = domain_to_oasa_mol(self.molecule)
-        
-        # Enhanced ring perception
-        try:
-            # Force ring system detection
-            cycles = o_mol.get_smallest_independent_cycles()
-            # print(f"[DEBUG SMILES] Detected {len(cycles)} ring systems")  # Commented out for reduced verbosity
-            
-            # Mark aromatic rings for better handling
-            try:
-                vertices = list(o_mol.vertices)
-                for cycle in cycles:
-                    is_aromatic = True
-                    for atom_idx in cycle:
-                        if atom_idx < len(vertices):
-                            vertex = vertices[atom_idx]
-                            symbol = getattr(vertex, 'symbol', '')
-                            if symbol not in ['C', 'N', 'O', 'S', 'P']:
-                                is_aromatic = False
-                                break
-                    
-                    if is_aromatic:
-                        # Mark as aromatic system
-                        for atom_idx in cycle:
-                            if atom_idx < len(vertices):
-                                vertex = vertices[atom_idx]
-                                if hasattr(vertex, 'aromatic'):
-                                    vertex.aromatic = True
-
-                # print("[DEBUG SMILES] Enhanced ring perception completed")  # Commented out for reduced verbosity
-            except Exception as e:
-                # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
-                pass
-
-        except Exception as e:
-            # print(f"[DEBUG SMILES] Ring perception warning: {e}")  # Commented out for reduced verbosity
-            pass
-        
-        # Normalize bond orders for OASA
-        for edge in o_mol.edges:
-            if hasattr(edge, 'order') and edge.order == 1.5:
-                # Aromatic bonds - keep as 1.5 for OASA
-                pass
-            elif hasattr(edge, 'order') and edge.order is None:
-                edge.order = 1  # Default to single bond
-        
+        self._normalize_ring_bonds_for_layout(o_mol)
         return o_mol, atom_map
     
     def _generate_oasa_coordinates(self, o_mol, atom_map):
@@ -581,6 +577,12 @@ class CoordinateGenerator2DSMILES:
         
         Applies OASA's coordinate optimizer with careful limits
         to maintain professional quality while improving layout.
+        
+        IMPORTANT: The optimizer's OASA molecule must have the same
+        aromatic ring marking as the coordinate generator's molecule.
+        Without this, the optimizer distorts ring geometries for
+        Kekulized inputs (SDF files) by treating aromatic bonds as
+        alternating single/double, which changes bond length targets.
         """
         try:
             from src.vendors.oasa.coords_optimizer import coords_optimizer
@@ -591,6 +593,10 @@ class CoordinateGenerator2DSMILES:
             
             # Convert to OASA format for optimization
             o_mol, atom_map = domain_to_oasa_mol(self.molecule)
+            
+            # Normalize ring bonds so the optimizer preserves regular-polygon
+            # ring geometry (same treatment as _preprocess_molecule_for_oasa).
+            self._normalize_ring_bonds_for_layout(o_mol)
             
             # Check if all atoms in atom_map have valid coordinates
             missing_coords = [idx for idx in atom_map if idx not in self.coords]
