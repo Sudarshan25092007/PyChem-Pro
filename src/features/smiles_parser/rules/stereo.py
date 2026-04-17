@@ -1,7 +1,7 @@
 """
 Stereochemistry module — E/Z (cis/trans) and R/S (tetrahedral) assignment.
 
-Processes stereo bonds (/ and \) from SMILES to assign E/Z geometry,
+Processes stereo bonds (/ and \\) from SMILES to assign E/Z geometry,
 and @/@@ chirality to assign R/S configuration.
 """
 
@@ -17,7 +17,7 @@ def assign_stereo(molecule, bond_stereo_info):
         bond_stereo_info: list of (bond_idx, stereo_type) from parser
 
     Updates:
-        - Double bonds: marks E/Z based on / and \ bond patterns
+        - Double bonds: marks E/Z based on / and \\ bond patterns
         - Chiral centers: validates @/@@ chirality
     """
     # ── E/Z Stereochemistry ──
@@ -29,10 +29,10 @@ def assign_stereo(molecule, bond_stereo_info):
 
 def _assign_ez_stereo(molecule, bond_stereo_info):
     """
-    Assign E/Z stereochemistry to double bonds based on / and \ stereo bonds.
+    Assign E/Z stereochemistry to double bonds based on / and \\ stereo bonds.
 
     In SMILES: F/C=C/F means trans (E), F/C=C\\F means cis (Z)
-    The / and \ indicate the direction of the bond relative to the carbon.
+    The / and \\ indicate the direction of the bond relative to the carbon.
     """
     if not bond_stereo_info:
         return
