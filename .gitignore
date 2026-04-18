@@ -20,3 +20,13 @@ graphify-out/
 .graphifyignore
 Claude.md
 .claude
+
+dist/
+build/
+*.build/
+*.dist/
+*.onefile-build/
+
+venv/
+.venv/
+env/

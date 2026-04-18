@@ -50,6 +50,10 @@ def main():
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("SMILES3D")
 
+    icon_path = os.path.join(script_dir, "assets", "icon.svg")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
     # Set default font
     font = QFont("Segoe UI", 10)
     app.setFont(font)

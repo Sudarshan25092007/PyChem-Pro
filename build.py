@@ -1,98 +1,91 @@
 """
-Build Script — Compile the application using Nuitka for distribution.
+Build script — compile PyChem into a native standalone binary with Nuitka.
 
-Generates a standalone native binary that is very hard to reverse-engineer.
-Supports Windows, Linux, and macOS from a single codebase.
+Produces:
+  macOS   → dist/PyChem.app     (wrap with `python package_dmg.py` to get a .dmg)
+  Windows → dist/PyChem.exe     (single-file)
+  Linux   → dist/PyChem         (single-file)
 
 Usage:
-    python build.py [--onefile] [--icon icon.ico]
+    python build.py                 # onefile/app-bundle
+    python build.py --dir           # standalone directory (faster iteration)
 """
 
 import os
 import sys
 import platform
 import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+APP_NAME = "PyChem"
+VERSION = "1.0.0"
+COMPANY = "PyChem"
+DESCRIPTION = "PyChem - Molecular Visualization Software"
 
 
-def build(onefile=True, icon=None):
-    """
-    Build the application using Nuitka.
+def build(onefile: bool = True) -> None:
+    system = platform.system()
+    icon_icns = ROOT / "assets" / "icon.icns"
+    icon_ico = ROOT / "assets" / "icon.ico"
 
-    Args:
-        onefile: If True, create single executable (default)
-        icon: Path to icon file (.ico for Windows, .icns for macOS)
-    """
     cmd = [
         sys.executable, "-m", "nuitka",
         "--standalone",
         "--enable-plugin=pyside6",
-        "--enable-plugin=numpy",
         "--remove-output",
-        "--assume-yes-for-downloading",
+        "--assume-yes-for-downloads",
         "--output-dir=dist",
-        "--company-name=SMILES3D",
-        "--product-name=SMILES to 3D Converter",
-        "--file-version=1.0.0",
-        "--product-version=1.0.0",
-        "--file-description=SMILES to 3D Molecular Structure Converter",
+        f"--output-filename={APP_NAME}",
+        f"--company-name={COMPANY}",
+        f"--product-name={APP_NAME}",
+        f"--file-version={VERSION}",
+        f"--product-version={VERSION}",
+        f"--file-description={DESCRIPTION}",
+        "--include-package=src",
+        "--include-package=pychem",
+        "--include-data-dir=plugins=plugins",
+        "--include-data-dir=assets=assets",
+        "--include-qt-plugins=sensible,iconengines,imageformats",
+        "--include-module=PySide6.QtSvg",
     ]
 
     if onefile:
         cmd.append("--onefile")
 
-    # Platform-specific options
-    system = platform.system()
     if system == "Windows":
         cmd.append("--windows-console-mode=disable")
-        if icon:
-            cmd.append(f"--windows-icon-from-ico={icon}")
-    elif system == "Darwin":  # macOS
+        if icon_ico.exists():
+            cmd.append(f"--windows-icon-from-ico={icon_ico}")
+    elif system == "Darwin":
         cmd.append("--macos-create-app-bundle")
-        if icon:
-            cmd.append(f"--macos-app-icon={icon}")
+        cmd.append(f"--macos-app-name={APP_NAME}")
+        cmd.append(f"--macos-app-version={VERSION}")
+        if icon_icns.exists():
+            cmd.append(f"--macos-app-icon={icon_icns}")
     elif system == "Linux":
-        if icon:
-            cmd.append(f"--linux-icon={icon}")
+        if icon_ico.exists():
+            cmd.append(f"--linux-icon={icon_ico}")
 
-    # Include all source packages
-    cmd.extend([
-        "--include-package=src",
-        "--include-package=src.core",
-        "--include-package=src.parser",
-        "--include-package=src.geometry",
-        "--include-package=src.charges",
-        "--include-package=src.io",
-        "--include-package=src.gui",
-        "--include-package=src.security",
-    ])
-
-    # Main script
     cmd.append("main.py")
 
     print("=" * 60)
-    print("Building SMILES to 3D Converter")
+    print(f"Building {APP_NAME} v{VERSION}")
     print(f"Platform: {system} ({platform.machine()})")
-    print(f"Mode: {'Single file' if onefile else 'Standalone directory'}")
+    print(f"Mode: {'onefile / app bundle' if onefile else 'standalone directory'}")
     print("=" * 60)
-    print(f"\nCommand: {' '.join(cmd)}\n")
+    print("Command:", " ".join(str(c) for c in cmd), "\n")
 
-    result = subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)))
-
-    if result.returncode == 0:
-        print("\n✓ Build successful! Output in ./dist/")
-    else:
-        print(f"\n✗ Build failed with code {result.returncode}")
-        sys.exit(1)
+    result = subprocess.run(cmd, cwd=ROOT)
+    if result.returncode != 0:
+        print(f"\nBuild failed (exit {result.returncode})")
+        sys.exit(result.returncode)
+    print("\nBuild complete -> dist/")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Build SMILES to 3D Converter")
-    parser.add_argument("--onefile", action="store_true", default=True,
-                        help="Create single executable")
-    parser.add_argument("--dir", action="store_true",
-                        help="Create standalone directory instead of single file")
-    parser.add_argument("--icon", type=str, help="Path to icon file")
-    args = parser.parse_args()
-
-    build(onefile=not args.dir, icon=args.icon)
+    p = argparse.ArgumentParser()
+    p.add_argument("--dir", action="store_true", help="standalone dir (no onefile)")
+    args = p.parse_args()
+    build(onefile=not args.dir)
