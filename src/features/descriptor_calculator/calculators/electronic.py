@@ -50,37 +50,55 @@ class ElectronicCalculator(BaseCalculator):
         return np.linalg.norm(dipole) * 2.54  # Convert to Debye
 
     def calc_polar_surface_area(self, molecule, selection) -> float:
-        """Calculate polar surface area."""
+        """Calculate polar surface area (PSA) using real SASA contributions from polar atoms."""
+        from src.features.cheminformatics.services.geometry_utils import calculate_sasa
         from ...cheminformatics.services.atom_properties import AtomPropertyAnalyzer
+        
         analyzer = AtomPropertyAnalyzer(molecule)
-        polar_set = set(analyzer.POLAR_ATOMS)
-        atomic_areas = {'O': 17.0, 'N': 12.0, 'S': 25.0, 'P': 25.0}
-
-        return sum(atomic_areas.get(molecule.atoms[idx].symbol, 15.0)
-                  for idx in self.get_selected_atoms(molecule, selection)
-                  if molecule.atoms[idx].symbol in polar_set)
+        polar_symbols = set(analyzer.POLAR_ATOMS)
+        
+        atoms = [molecule.atoms[idx] for idx in selection.atom_indices if idx < len(molecule.atoms)]
+        if not atoms or not all(a.has_coords for a in atoms):
+            return 0.0
+            
+        coords = np.array([[a.x, a.y, a.z] for a in atoms])
+        symbols = [a.symbol for a in atoms]
+        
+        # Calculate SASA and only sum contributions from polar atoms
+        # I'll update calculate_sasa to return per-atom contributions
+        from src.features.cheminformatics.services.geometry_utils import calculate_sasa_per_atom
+        atom_sasa = calculate_sasa_per_atom(coords, symbols)
+        
+        total_psa = 0.0
+        for i, symbol in enumerate(symbols):
+            if symbol.upper() in polar_symbols:
+                total_psa += atom_sasa[i]
+                
+        return total_psa
 
     def calc_apolar_surface_area(self, molecule, selection) -> float:
         """Calculate apolar (nonpolar) surface area."""
-        from ..descriptor_engine import DescriptorEngine
-        engine = DescriptorEngine()
-        total_sasa = self.calc_sasa(molecule, selection)
-        polar_sasa = self.calc_polar_surface_area(molecule, selection)
-        return total_sasa - polar_sasa
-
-    def calc_sasa(self, molecule, selection) -> float:
-        """Calculate solvent accessible surface area (simplified)."""
-        selected_set = self.get_selected_set(selection)
-        total_area = 0.0
-        atomic_radii = {'H': 1.2, 'C': 1.7, 'N': 1.55, 'O': 1.52,
-                       'F': 1.47, 'Cl': 1.75, 'Br': 1.85, 'I': 1.98}
-
-        for idx in selection.atom_indices:
-            if idx < len(molecule.atoms):
-                radius = atomic_radii.get(molecule.atoms[idx].symbol, 1.5)
-                total_area += 4 * np.pi * radius ** 2
-
-        return total_area
+        from src.features.cheminformatics.services.geometry_utils import calculate_sasa
+        from ...cheminformatics.services.atom_properties import AtomPropertyAnalyzer
+        
+        atoms = [molecule.atoms[idx] for idx in selection.atom_indices if idx < len(molecule.atoms)]
+        if not atoms or not all(a.has_coords for a in atoms):
+            return 0.0
+            
+        coords = np.array([[a.x, a.y, a.z] for a in atoms])
+        symbols = [a.symbol for a in atoms]
+        
+        # 1. Total SASA
+        total_sasa = calculate_sasa(coords, symbols)
+        
+        # 2. Polar SASA (sum of SASA contributions from polar atoms)
+        analyzer = AtomPropertyAnalyzer(molecule)
+        polar_indices = set()
+        for i, atom in enumerate(molecule.atoms):
+             if atom.symbol in analyzer.POLAR_ATOMS:
+                 polar_indices.add(i)
+        
+        return total_sasa - self.calc_polar_surface_area(molecule, selection)
 
     def calc_mean_absolute_charge(self, molecule, selection) -> float:
         """Calculate mean absolute partial charge."""

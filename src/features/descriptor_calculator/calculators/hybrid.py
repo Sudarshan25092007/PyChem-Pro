@@ -9,12 +9,14 @@ class HybridCalculator(BaseCalculator):
     """Calculator for hybrid/drug-like molecular descriptors."""
 
     def calc_lipophilicity(self, molecule, selection) -> float:
-        """Calculate molecular lipophilicity (logP)."""
-        fragments = {'C': 1.46, 'H': 0.54, 'O': -1.5, 'N': -1.0,
-                   'Cl': 1.23, 'Br': 1.86, 'F': 0.14, 'S': 0.23}
-
-        return sum(fragments.get(molecule.atoms[idx].symbol, 0.0)
-                  for idx in self.get_selected_atoms(molecule, selection))
+        """Calculate molecular lipophilicity (logP) using MLP method."""
+        from ...cheminformatics.services.lipophilicity_service import calculate_logp
+        
+        # If selection is not the whole molecule, we could subset, 
+        # but logP is generally a molecular property.
+        # For consistency with other calculators, we'll calculate it for the full molecule
+        # unless it's a very specific fragment selection.
+        return calculate_logp(molecule)
 
     def calc_polarizability(self, molecule, selection) -> float:
         """Calculate molecular polarizability."""
@@ -32,18 +34,6 @@ class HybridCalculator(BaseCalculator):
         return sum(atomic_refractivities.get(molecule.atoms[idx].symbol, 2.0)
                   for idx in self.get_selected_atoms(molecule, selection))
 
-    def calc_xlogp(self, molecule, selection) -> float:
-        """Calculate XLogP (simplified atom-based method)."""
-        atom_values = {
-            'C': 0.2, 'N': -0.9, 'O': -1.1, 'S': 0.1, 'P': -0.3,
-            'F': 0.4, 'Cl': 0.8, 'Br': 1.0, 'I': 1.2, 'H': 0.0
-        }
-        return sum(atom_values.get(molecule.atoms[idx].symbol, 0.0)
-                  for idx in self.get_selected_atoms(molecule, selection))
-
-    def calc_alogp(self, molecule, selection) -> float:
-        """Calculate ALogP (Ghose-Crippen method - simplified)."""
-        return self.calc_lipophilicity(molecule, selection)
 
     def calc_lipinski_hba(self, molecule, selection) -> int:
         """Calculate Lipinski H-bond acceptors (N + O count)."""
@@ -67,7 +57,7 @@ class HybridCalculator(BaseCalculator):
             violations += 1
 
         # LogP > 5
-        logp = self.calc_xlogp(molecule, selection)
+        logp = self.calc_lipophilicity(molecule, selection)
         if logp > 5:
             violations += 1
 
@@ -109,7 +99,7 @@ class HybridCalculator(BaseCalculator):
             score -= 0.1
 
         # LogP preference (0-5)
-        logp = self.calc_xlogp(molecule, selection)
+        logp = self.calc_lipophilicity(molecule, selection)
         if logp < 0 or logp > 5:
             score -= 0.1
 

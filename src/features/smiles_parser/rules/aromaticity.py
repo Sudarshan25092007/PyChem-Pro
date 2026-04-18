@@ -143,7 +143,12 @@ def perceive_aromaticity(molecule):
                 # Check if it could be sp2 (aromatic atoms might not have been typed yet)
                 neighbors = molecule.get_neighbor_bonds(atom_idx)
                 has_double = any(b.is_double for _, b in neighbors)
-                if not has_double and not atom.is_aromatic:
+                
+                # Heteroatoms (N, O, S, P, Se, Te) can be planar sp2 without double bonds 
+                # if they contribute a lone pair (pyrrole-type)
+                can_be_planar_hetero = molecule.atoms[atom_idx].symbol in ('N', 'O', 'S', 'P', 'Se', 'Te')
+                
+                if not has_double and not atom.is_aromatic and not can_be_planar_hetero:
                     all_planar = False
                     break
 
@@ -164,7 +169,8 @@ def perceive_aromaticity(molecule):
                 b = ring[(i + 1) % len(ring)]
                 bond = molecule.get_bond_between(a, b)
                 if bond:
-                    # Keep the kekulized bond types but mark as in aromatic ring
+                    # Mark bond type as AROMATIC for fingerprinting and typing
+                    bond.bond_type = BondType.AROMATIC
                     bond.is_in_ring = True
 
 

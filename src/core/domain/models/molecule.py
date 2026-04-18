@@ -196,9 +196,20 @@ class Molecule:
         return len(self.bonds)
 
     @property
-    def num_heavy_atoms(self):
+    def count_heavy_atoms(self):
         """Count non-hydrogen atoms."""
         return sum(1 for a in self.atoms if a.symbol != 'H')
+
+    def propagate_aromaticity(self):
+        """
+        Mark atoms as aromatic if they are part of an aromatic bond.
+        This is useful for formats like MOL2 and SDF that mark aromatic bonds explicitly.
+        """
+        from src.core.domain.models.bond import BondType
+        for bond in self.bonds:
+            if bond.bond_type == BondType.AROMATIC:
+                self.atoms[bond.begin_atom_idx].is_aromatic = True
+                self.atoms[bond.end_atom_idx].is_aromatic = True
 
     # ─── Ring Perception (SSSR) ─────────────────────────────────────
 
@@ -425,9 +436,13 @@ class Molecule:
                     is_amide = False
                     for n_idx, bond in neighbors:
                         if self.atoms[n_idx].symbol == 'C':
+                            # Check if this carbon is a carbonyl (has C=O)
                             for nn_idx, nb in self.get_neighbor_bonds(n_idx):
                                 if self.atoms[nn_idx].symbol == 'O' and nb.is_double:
                                     is_amide = True
+                                    # Set bond type to AMIDE for fingerprinting logic
+                                    from src.core.domain.models.bond import BondType
+                                    bond.bond_type = BondType.AMIDE
                     atom.sybyl_type = 'N.am' if is_amide else 'N.2'
                 elif atom.formal_charge == 1:
                     atom.sybyl_type = 'N.4'

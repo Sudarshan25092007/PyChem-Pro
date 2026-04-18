@@ -10,3 +10,4 @@ run_app.bat
 *.pyc
 __pycache__/
 *.sdf
+MLP_Tools/

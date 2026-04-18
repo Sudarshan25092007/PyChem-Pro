@@ -258,9 +258,7 @@ class DescriptorEngine:
         """Get hybrid/drug-like descriptors."""
         calc = self.hybrid_calc
         return [
-            DescriptorInfo("Lipophilicity", "Molecular lipophilicity (logP)", DescriptorCategory.HYBRID, "fragment_based_logP", "logP", calculation_function=calc.calc_lipophilicity),
-            DescriptorInfo("XLogP", "XLogP (predicted partition coefficient)", DescriptorCategory.HYBRID, "xlogp", "logP", calculation_function=calc.calc_xlogp),
-            DescriptorInfo("ALogP", "ALogP (atom-based logP)", DescriptorCategory.HYBRID, "alogp", "logP", calculation_function=calc.calc_alogp),
+            DescriptorInfo("Lipophilicity (LogP)", "Molecular lipophilicity (logP)", DescriptorCategory.HYBRID, "fragment_based_logP", "logP", calculation_function=calc.calc_lipophilicity),
             DescriptorInfo("Polarizability", "Molecular polarizability", DescriptorCategory.HYBRID, "sum(atomic_polarizabilities)", "Å³", calculation_function=calc.calc_polarizability),
             DescriptorInfo("MolarRefractivity", "Molar refractivity", DescriptorCategory.HYBRID, "fragment_based_calculation", "cm³/mol", calculation_function=calc.calc_molar_refractivity),
             DescriptorInfo("LipinskiHBA", "Lipinski H-bond acceptors", DescriptorCategory.HYBRID, "lipinski_hba", "count", calculation_function=calc.calc_lipinski_hba),

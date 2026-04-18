@@ -10,31 +10,30 @@ class GeometricCalculator(BaseCalculator):
     """Calculator for geometric (3D) molecular descriptors."""
 
     def calc_sasa(self, molecule, selection) -> float:
-        """Calculate solvent accessible surface area."""
-        selected_set = self.get_selected_set(selection)
-        total_area = 0.0
-        atomic_radii = {'H': 1.2, 'C': 1.7, 'N': 1.55, 'O': 1.52,
-                       'F': 1.47, 'Cl': 1.75, 'Br': 1.85, 'I': 1.98}
-
-        for idx in selection.atom_indices:
-            if idx < len(molecule.atoms):
-                radius = atomic_radii.get(molecule.atoms[idx].symbol, 1.5)
-                total_area += 4 * np.pi * radius ** 2
-
-        return total_area
+        """Calculate solvent accessible surface area (SASA) using Shrake-Rupley algorithm."""
+        from src.features.cheminformatics.services.geometry_utils import calculate_sasa
+        
+        atoms = [molecule.atoms[idx] for idx in selection.atom_indices if idx < len(molecule.atoms)]
+        if not atoms or not all(a.has_coords for a in atoms):
+            return 0.0
+            
+        coords = np.array([[a.x, a.y, a.z] for a in atoms])
+        symbols = [a.symbol for a in atoms]
+        
+        return calculate_sasa(coords, symbols)
 
     def calc_molecular_volume(self, molecule, selection) -> float:
-        """Calculate molecular volume."""
-        selected_set = self.get_selected_set(selection)
-        total_volume = 0.0
-        atomic_volumes = {'H': 7.2, 'C': 20.6, 'N': 16.6, 'O': 14.7,
-                         'F': 13.3, 'Cl': 22.4, 'Br': 28.2, 'I': 32.6}
-
-        for idx in selection.atom_indices:
-            if idx < len(molecule.atoms):
-                total_volume += atomic_volumes.get(molecule.atoms[idx].symbol, 15.0)
-
-        return total_volume
+        """Calculate molecular volume using numerical integration."""
+        from src.features.cheminformatics.services.geometry_utils import calculate_volume
+        
+        atoms = [molecule.atoms[idx] for idx in selection.atom_indices if idx < len(molecule.atoms)]
+        if not atoms or not all(a.has_coords for a in atoms):
+            return 0.0
+            
+        coords = np.array([[a.x, a.y, a.z] for a in atoms])
+        symbols = [a.symbol for a in atoms]
+        
+        return calculate_volume(coords, symbols)
 
     def calc_radius_of_gyration(self, molecule, selection) -> float:
         """Calculate radius of gyration."""
