@@ -1,6 +1,7 @@
 
 docs/
 testing/
+tests/
 
 Prompts.txt
 run_app.bat
@@ -11,3 +12,11 @@ run_app.bat
 __pycache__/
 *.sdf
 MLP_Tools/
+
+CPPCartoon/
+graphify-out/
+
+.DS_Store
+.graphifyignore
+Claude.md
+.claude
