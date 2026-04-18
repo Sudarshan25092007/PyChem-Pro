@@ -125,24 +125,47 @@ class ConstitutionalCalculator(BaseCalculator):
 
     # Bond counts
     def calc_single_bond_count(self, molecule, selection) -> int:
+        self.ensure_perception(molecule)
         selected_set = self.get_selected_set(selection)
         return sum(1 for bond in molecule.bonds
                   if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set and bond.is_single)
 
     def calc_double_bond_count(self, molecule, selection) -> int:
+        self.ensure_perception(molecule)
         selected_set = self.get_selected_set(selection)
         return sum(1 for bond in molecule.bonds
                   if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set and bond.is_double)
 
     def calc_triple_bond_count(self, molecule, selection) -> int:
+        self.ensure_perception(molecule)
         selected_set = self.get_selected_set(selection)
         return sum(1 for bond in molecule.bonds
                   if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set and bond.is_triple)
 
     def calc_aromatic_bond_count(self, molecule, selection) -> int:
+        """Calculate aromatic bond count by identifying bonds within aromatic rings."""
         selected_set = self.get_selected_set(selection)
-        return sum(1 for bond in molecule.bonds
-                  if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set and bond.is_aromatic)
+        aromatic_bonds = set()
+        
+        # 1. First, count bonds explicitly marked as aromatic
+        for bond in molecule.bonds:
+            if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set:
+                if bond.is_aromatic:
+                    aromatic_bonds.add(tuple(sorted((bond.begin_atom_idx, bond.end_atom_idx))))
+        
+        # 2. Fallback: Identify bonds between aromatic atoms in the same ring
+        # This is very robust for SDF/MOL files where bond orders might be Kekulized
+        rings = molecule.find_rings()
+        for ring in rings:
+            # If all atoms in the ring are marked aromatic, count all its bonds as aromatic
+            if all(idx < len(molecule.atoms) and molecule.atoms[idx].is_aromatic for idx in ring):
+                for i in range(len(ring)):
+                    a1 = ring[i]
+                    a2 = ring[(i+1) % len(ring)]
+                    if a1 in selected_set and a2 in selected_set:
+                         aromatic_bonds.add(tuple(sorted((a1, a2))))
+                             
+        return len(aromatic_bonds)
 
     # Hybridization-dependent carbon counts
     def calc_sp3_carbon_count(self, molecule, selection) -> int:
@@ -225,20 +248,29 @@ class ConstitutionalCalculator(BaseCalculator):
         return count
 
     def calc_ester_bond_count(self, molecule, selection) -> int:
-        """Calculate ester bond count (-C(=O)-O-)."""
+        """Calculate ester group count (R-COO-R', where R' != H)."""
         selected_set = self.get_selected_set(selection)
         count = 0
-        for bond in molecule.bonds:
-            if bond.begin_atom_idx in selected_set and bond.end_atom_idx in selected_set:
-                atom1 = molecule.atoms[bond.begin_atom_idx]
-                atom2 = molecule.atoms[bond.end_atom_idx]
-                if (atom1.symbol == 'C' and atom2.symbol == 'O') or (atom1.symbol == 'O' and atom2.symbol == 'C'):
-                    c_idx = bond.begin_atom_idx if atom1.symbol == 'C' else bond.end_atom_idx
-                    for nb_idx in molecule.get_neighbors(c_idx):
-                        nb_bond = molecule.get_bond_between(c_idx, nb_idx)
-                        if nb_bond and nb_bond.is_double and molecule.atoms[nb_idx].symbol == 'O':
+        for idx in self.get_selected_atoms(molecule, selection):
+            atom = molecule.atoms[idx]
+            if atom.symbol == 'O':
+                neighbors = molecule.get_neighbors(idx)
+                if len(neighbors) == 2:
+                    # Check if neighbors are two carbons (one carbonyl, one alkyl/aryl)
+                    n_atoms = [molecule.atoms[n] for n in neighbors if n < len(molecule.atoms)]
+                    if all(a.symbol == 'C' for a in n_atoms):
+                        # At least one Carbon must be a carbonyl (C=O)
+                        is_ester = False
+                        for n_idx in neighbors:
+                            for nn_idx in molecule.get_neighbors(n_idx):
+                                if nn_idx != idx and nn_idx < len(molecule.atoms) and molecule.atoms[nn_idx].symbol == 'O':
+                                    bond = molecule.get_bond_between(n_idx, nn_idx)
+                                    if bond and bond.is_double:
+                                        is_ester = True
+                                        break
+                            if is_ester: break
+                        if is_ester:
                             count += 1
-                            break
         return count
 
     def calc_carbonyl_bond_count(self, molecule, selection) -> int:
@@ -422,19 +454,22 @@ class ConstitutionalCalculator(BaseCalculator):
         return c_count - (h_count + x_count)/2.0 + n_count/2.0 + 1.0
 
     def calc_aromatic_proportion(self, molecule, selection) -> float:
-        """Calculate proportion of aromatic atoms."""
-        total = len(selection.atom_indices)
-        if total == 0:
+        """Calculate proportion of aromatic atoms (relative to heavy atoms)."""
+        heavy_count = self.calc_heavy_atom_count(molecule, selection)
+        if heavy_count == 0:
             return 0.0
-        aromatic_count = self.calc_aromatic_carbon_count(molecule, selection)
-        return aromatic_count / total
+        aromatic_count = sum(1 for idx in self.get_selected_atoms(molecule, selection)
+                            if molecule.atoms[idx].symbol != 'H' and molecule.atoms[idx].is_aromatic)
+        return aromatic_count / heavy_count
 
     def calc_aliphatic_proportion(self, molecule, selection) -> float:
-        """Calculate proportion of aliphatic atoms."""
-        total = len(selection.atom_indices)
-        if total == 0:
+        """Calculate proportion of aliphatic atoms (relative to heavy atoms)."""
+        heavy_count = self.calc_heavy_atom_count(molecule, selection)
+        if heavy_count == 0:
             return 0.0
-        return self.calc_aliphatic_carbon_count(molecule, selection) / total
+        aliphatic_count = sum(1 for idx in self.get_selected_atoms(molecule, selection)
+                             if molecule.atoms[idx].symbol != 'H' and not molecule.atoms[idx].is_aromatic)
+        return aliphatic_count / heavy_count
 
     def calc_sp3_proportion(self, molecule, selection) -> float:
         """Calculate proportion of sp3 hybridized carbons."""
@@ -444,11 +479,11 @@ class ConstitutionalCalculator(BaseCalculator):
         return self.calc_sp3_carbon_count(molecule, selection) / total_c
 
     def calc_hetero_proportion(self, molecule, selection) -> float:
-        """Calculate proportion of hetero atoms."""
-        total = len(selection.atom_indices)
-        if total == 0:
+        """Calculate proportion of hetero atoms (relative to heavy atoms)."""
+        heavy_count = self.calc_heavy_atom_count(molecule, selection)
+        if heavy_count == 0:
             return 0.0
-        return self.calc_hetero_atom_count(molecule, selection) / total
+        return self.calc_hetero_atom_count(molecule, selection) / heavy_count
 
     def calc_hc_ratio(self, molecule, selection) -> float:
         """Calculate hydrogen to carbon ratio."""

@@ -16,6 +16,7 @@ class BondType:
     DOUBLE = 2
     TRIPLE = 3
     AROMATIC = 4  # Stored as aromatic, resolved to 1.5 for calculations
+    AMIDE = 5     # Peptide/amide bond
 
 
 # Bond order mapping for numerical calculations
@@ -24,6 +25,7 @@ BOND_ORDER_MAP = {
     BondType.DOUBLE: 2.0,
     BondType.TRIPLE: 3.0,
     BondType.AROMATIC: 1.5,
+    BondType.AMIDE: 1.0,
 }
 
 
@@ -76,6 +78,10 @@ class Bond:
     @property
     def is_aromatic(self):
         return self.bond_type == BondType.AROMATIC
+
+    @property
+    def is_amide(self):
+        return self.bond_type == BondType.AMIDE
 
     def other_atom(self, atom_idx):
         """Return the index of the atom on the other end of the bond."""

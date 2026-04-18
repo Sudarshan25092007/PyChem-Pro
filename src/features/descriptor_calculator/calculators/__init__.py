@@ -15,6 +15,19 @@ class BaseCalculator:
     def __init__(self):
         pass
 
+    def ensure_perception(self, molecule: "Molecule"):
+        """
+        Ensure the molecule has aromaticity perceived and hybridization assigned.
+        This is critical for accurate constitutional and topological descriptors.
+        """
+        from ...smiles_parser.rules.aromaticity import perceive_aromaticity
+        
+        # Always run perception if it hasn't been run or to ensure sync
+        # Molecule.find_rings() is already called inside perceive_aromaticity
+        perceive_aromaticity(molecule)
+        molecule.propagate_aromaticity()
+        molecule.assign_hybridization()
+
     def get_selected_atoms(self, molecule: "Molecule", selection: "AtomSelection") -> List[int]:
         """Get list of selected atom indices that are valid."""
         return [idx for idx in selection.atom_indices if idx < len(molecule.atoms)]

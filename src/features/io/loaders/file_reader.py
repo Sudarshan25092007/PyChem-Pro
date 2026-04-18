@@ -8,6 +8,26 @@ import re
 from src.core.domain.models.atom import Atom
 from src.core.domain.models.bond import Bond, BondType
 from src.core.domain.models.molecule import Molecule
+from src.features.smiles_parser.rules.aromaticity import perceive_aromaticity
+
+
+def _post_load_processing(mol: Molecule):
+    """
+    Perform essential perception and typing after loading from file.
+    """
+    # 1. Ring perception (essential for aromaticity and descriptors)
+    mol.find_rings()
+    
+    # 2. Propagate explicit aromaticity from bonds (MOL2/SDF type 4)
+    mol.propagate_aromaticity()
+    
+    # 3. Perceive aromaticity from Kekule structures (SDF/MOL alternating bonds)
+    # We assign hybridization first as it's a prerequisite for perception
+    mol.assign_hybridization()
+    perceive_aromaticity(mol)
+    
+    # 4. Final typing
+    mol.assign_sybyl_types()
 
 
 def read_mol(filepath_or_string, is_string=False):
@@ -104,6 +124,7 @@ def read_mol(filepath_or_string, is_string=False):
                 if 0 <= atom_idx < len(mol.atoms):
                     mol.atoms[atom_idx].isotope = isotope
 
+    _post_load_processing(mol)
     return mol
 
 
@@ -144,6 +165,7 @@ def read_sdf(filepath_or_string, is_string=False):
             value = match.group(2).strip()
             mol.properties[key] = value
 
+    _post_load_processing(mol)
     return mol
 
 
@@ -261,14 +283,17 @@ def read_mol2(filepath_or_string, is_string=False):
                 bt = BondType.DOUBLE
             elif bond_type_str == '3':
                 bt = BondType.TRIPLE
-            elif bond_type_str in ('ar', 'am'):
+            elif bond_type_str == 'ar':
                 bt = BondType.AROMATIC
+            elif bond_type_str == 'am':
+                bt = BondType.AMIDE
             else:
                 bt = BondType.SINGLE
 
             if 0 <= a1 < len(mol.atoms) and 0 <= a2 < len(mol.atoms):
                 mol.add_bond(a1, a2, bt)
 
+    _post_load_processing(mol)
     return mol
 
 
