@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.svg" alt="PyChem logo" width="160" height="160">
+</p>
+
 # PyChem
 
 > A pure-Python desktop application and library for chemistry and cheminformatics — molecular visualization, SMILES parsing, PDB loading, MMFF94 geometry optimization, descriptors, and a plugin ecosystem. No RDKit. No OpenBabel. Everything implemented from scratch.
