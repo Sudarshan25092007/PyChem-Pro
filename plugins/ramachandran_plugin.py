@@ -913,7 +913,7 @@ class RamachandranPlugin(BasePlugin):
     def __init__(self):
         super().__init__(PluginInfo(
             name="Ramachandran Plotter",
-            version="2.0.0",
+            version="1.0.0",
             description="KDE-based Ramachandran analysis using Top8000 dataset.",
             author="PyChem Team",
             plugin_type=PluginType.ANALYSIS,

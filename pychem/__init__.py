@@ -9,7 +9,7 @@ from src.core.domain.models.molecule import Molecule
 from src.core.domain.models.atom import Atom
 from src.core.domain.models.bond import Bond
 
-__version__ = '2.0.0'
+__version__ = '1.0.0'
 
 __all__ = [
     'Molecule', 'Atom', 'Bond',

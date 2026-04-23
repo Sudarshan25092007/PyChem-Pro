@@ -651,7 +651,7 @@ class QsarModelerPlugin(BasePlugin):
     def __init__(self):
         super().__init__(PluginInfo(
             name="QSAR Modeler Pro",
-            version="2.0.0",
+            version="1.0.0",
             description="Advanced QSAR modeling with GA feature selection and XGBoost",
             author="SMILES Team",
             plugin_type=PluginType.ANALYSIS,

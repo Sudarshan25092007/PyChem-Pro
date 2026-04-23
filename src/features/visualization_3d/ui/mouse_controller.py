@@ -29,6 +29,7 @@ class MouseController:
         v = self._v
         v._last_mouse_pos = event.position()
         v._mouse_button = event.button()
+        v._has_dragged = False
 
         # Shift + left-click begins rubber-band selection (PyMOL-style)
         if (event.button() == Qt.MouseButton.LeftButton
@@ -56,9 +57,22 @@ class MouseController:
         if v._mouse_button == Qt.MouseButton.LeftButton:
             v.rot_y += dx * 0.5
             v.rot_x += dy * 0.5
+            if abs(dx) > 1 or abs(dy) > 1: v._has_dragged = True
+        elif v._mouse_button == Qt.MouseButton.RightButton:
+            cx = v.width() / 2.0
+            cy = v.height() / 2.0
+            ang1 = math.atan2(v._last_mouse_pos.y() - cy, v._last_mouse_pos.x() - cx)
+            ang2 = math.atan2(event.position().y() - cy, event.position().x() - cx)
+            angle_diff = ang2 - ang1
+            if angle_diff > math.pi: angle_diff -= 2 * math.pi
+            elif angle_diff < -math.pi: angle_diff += 2 * math.pi
+            if not hasattr(v, 'rot_z'): v.rot_z = 0.0
+            v.rot_z -= math.degrees(angle_diff)
+            if abs(dx) > 1 or abs(dy) > 1: v._has_dragged = True
         elif v._mouse_button == Qt.MouseButton.MiddleButton:
             v.pan_x += dx
             v.pan_y += dy
+            if abs(dx) > 1 or abs(dy) > 1: v._has_dragged = True
 
         v._last_mouse_pos = event.position()
         v.update()
@@ -82,7 +96,8 @@ class MouseController:
         if v._last_mouse_pos is not None:
             moved = (abs(event.position().x() - v._last_mouse_pos.x()) +
                      abs(event.position().y() - v._last_mouse_pos.y()))
-            was_click = moved < 3
+            # Consider it a click if the mouse didn't drag at all
+            was_click = not getattr(v, '_has_dragged', False) and moved < 3
 
         btn = event.button()
 

@@ -77,6 +77,7 @@ class MolViewer3D(QWidget):
         # Camera state
         self.rot_x = 20.0
         self.rot_y = -30.0
+        self.rot_z = 0.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.zoom = 40.0
@@ -160,6 +161,7 @@ class MolViewer3D(QWidget):
     def reset_view(self):
         self.rot_x = 20.0
         self.rot_y = -30.0
+        self.rot_z = 0.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         if self.molecule:
@@ -437,14 +439,19 @@ class MolViewer3D(QWidget):
         sin_x = math.sin(math.radians(self.rot_x))
         cos_y = math.cos(math.radians(self.rot_y))
         sin_y = math.sin(math.radians(self.rot_y))
+        cos_z = math.cos(math.radians(self.rot_z))
+        sin_z = math.sin(math.radians(self.rot_z))
 
         x, y, z = centroid[0], centroid[1], centroid[2]
         x1 = x * cos_y + z * sin_y
         z1 = -x * sin_y + z * cos_y
         y1 = y * cos_x - z1 * sin_x
+        
+        x2 = x1 * cos_z - y1 * sin_z
+        y2 = x1 * sin_z + y1 * cos_z
 
-        self.pan_x = -x1 * self.zoom
-        self.pan_y = y1 * self.zoom
+        self.pan_x = -x2 * self.zoom
+        self.pan_y = y2 * self.zoom
 
         self.update()
 

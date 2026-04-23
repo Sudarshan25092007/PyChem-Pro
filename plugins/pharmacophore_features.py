@@ -1844,7 +1844,7 @@ class PharmacophoreFeatures(BasePlugin):
     def __init__(self):
         info = PluginInfo(
             name="Pharmacophore-Features",
-            version="1.1.0",
+            version="1.0.0",
             description=(
                 "Pharmacophore feature detection with LFD clustering, "
                 "PCA ellipsoids, Gaussian descriptors, 3D rotation, "

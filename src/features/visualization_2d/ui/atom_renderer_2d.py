@@ -61,7 +61,19 @@ class AtomRenderer2D:
         """Get the main atom label font, scaled properly."""
         from .rendering_config import RenderingConfig
         v = self._v
-        base_scale = v._original_scale if v._original_scale is not None else v._scale
+        # For exports: 
+        # - when export_scale > 1 (high-DPI export): use original scale to prevent bloated fonts
+        # - when export_scale < 1 (print preview): use current scale so fonts scale with molecule
+        if v._original_scale is not None:
+            export_factor = v._scale / v._original_scale if v._original_scale > 0 else 1.0
+            if export_factor > 1.0:
+                # High-DPI export: use original scale to keep font stable
+                base_scale = v._original_scale
+            else:
+                # Print preview: use current scale so font scales with molecule
+                base_scale = v._scale
+        else:
+            base_scale = v._scale
         size = int(base_scale * RenderingConfig.FONT_SIZE_RATIO)
         size = max(RenderingConfig.MIN_FONT_SIZE, min(size, RenderingConfig.MAX_FONT_SIZE))
         font = QFont('Arial', size)
@@ -71,7 +83,14 @@ class AtomRenderer2D:
     def _get_subscript_font(self):
         """Get the subscript font scaled properly."""
         v = self._v
-        base_scale = v._original_scale if v._original_scale is not None else v._scale
+        if v._original_scale is not None:
+            export_factor = v._scale / v._original_scale if v._original_scale > 0 else 1.0
+            if export_factor > 1.0:
+                base_scale = v._original_scale
+            else:
+                base_scale = v._scale
+        else:
+            base_scale = v._scale
         size = max(6, int(base_scale * 0.20))
         if v._original_scale is not None:
             size = min(size, 10)

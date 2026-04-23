@@ -111,6 +111,7 @@ class MolViewer2D(QWidget):
         # Mouse
         self._last_mouse_pos = None
         self._mouse_button = None
+        self._has_dragged_right = False
         self._is_dark_bg = True
         self._hovered_atom = -1            # For tooltip on hover
 
@@ -573,6 +574,9 @@ class MolViewer2D(QWidget):
         self._last_mouse_pos = event.position()
         self._mouse_button = event.button()
 
+        if event.button() == Qt.MouseButton.RightButton:
+            self._has_dragged_right = False
+
         # Shift + left-click begins rubber-band selection (PyMOL-style)
         if (event.button() == Qt.MouseButton.LeftButton
                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
@@ -657,13 +661,17 @@ class MolViewer2D(QWidget):
             self.update()
             return
 
-        # Normal pan operation
+        # Normal pan and rotate operation
         dx = event.position().x() - self._last_mouse_pos.x()
         dy = event.position().y() - self._last_mouse_pos.y()
 
         if self._mouse_button == Qt.MouseButton.LeftButton:
             self._offset_x += dx
             self._offset_y += dy
+        elif self._mouse_button == Qt.MouseButton.RightButton:
+            if abs(dx) > 0 or abs(dy) > 0:
+                self._has_dragged_right = True
+                self._rotate_2d_mouse(event.position(), self._last_mouse_pos)
 
         self._last_mouse_pos = event.position()
         self.update()
@@ -742,6 +750,9 @@ class MolViewer2D(QWidget):
         - Fit to screen: Auto-fit molecule to view
         - Reset view: Reset zoom and pan to default
         """
+        if self._has_dragged_right:
+            return
+
         if not self.molecule or not self.coords_2d:
             return
         
@@ -882,6 +893,59 @@ class MolViewer2D(QWidget):
                             Qt.PenStyle.DashLine))
         painter.setBrush(QBrush(QColor(255, 200, 50, 40)))
         painter.drawRect(rect)
+
+    def _rotate_2d_mouse(self, current_pos, last_pos):
+        """Rotate 2D coordinates circularly based on mouse drag around centroid."""
+        if not self.coords_2d:
+            return
+            
+        # Get centroid in molecule coordinates
+        xs = [c[0] for c in self.coords_2d.values() if c[0] is not None]
+        ys = [c[1] for c in self.coords_2d.values() if c[1] is not None]
+        if not xs or not ys:
+            return
+        cx_mol = sum(xs) / len(xs)
+        cy_mol = sum(ys) / len(ys)
+        
+        # Convert centroid to screen coordinates
+        cx_screen, cy_screen = self._to_screen(cx_mol, cy_mol)
+        
+        # Calculate angle difference
+        ang1 = math.atan2(last_pos.y() - cy_screen, last_pos.x() - cx_screen)
+        ang2 = math.atan2(current_pos.y() - cy_screen, current_pos.x() - cx_screen)
+        angle_diff = ang2 - ang1
+        
+        # Handle wrap-around
+        if angle_diff > math.pi:
+            angle_diff -= 2 * math.pi
+        elif angle_diff < -math.pi:
+            angle_diff += 2 * math.pi
+            
+        # The screen Y grows down, molecule Y grows up.
+        # Rotating on screen visually corresponds to rotating molecule coordinates
+        # by the negative angle difference.
+        angle = -angle_diff
+        
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        
+        for idx in self.coords_2d:
+            x, y = self.coords_2d[idx]
+            if x is not None and y is not None:
+                # Translate to origin
+                tx = x - cx_mol
+                ty = y - cy_mol
+                # Rotate
+                rx = tx * cos_a - ty * sin_a
+                ry = tx * sin_a + ty * cos_a
+                # Translate back
+                self.coords_2d[idx] = [rx + cx_mol, ry + cy_mol]
+                
+                # Update cached atom coordinates
+                atom = self.molecule.get_atom(idx)
+                if atom:
+                    atom.x2d = rx + cx_mol
+                    atom.y2d = ry + cy_mol
 
     # ─── Utils ────────────────────────────────────────────────────
 

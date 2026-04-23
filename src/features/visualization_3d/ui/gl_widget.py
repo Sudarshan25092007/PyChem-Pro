@@ -134,6 +134,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         # Camera state (matches MolViewer3D defaults)
         self.rot_x = 20.0
         self.rot_y = -30.0
+        self.rot_z = 0.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.zoom = 40.0
@@ -319,6 +320,8 @@ class GLMoleculeWidget(_QOpenGLWidget):
         sin_x = math.sin(math.radians(self.rot_x))
         cos_y = math.cos(math.radians(self.rot_y))
         sin_y = math.sin(math.radians(self.rot_y))
+        cos_z = math.cos(math.radians(self.rot_z))
+        sin_z = math.sin(math.radians(self.rot_z))
 
         # Vectorised rotation
         pos = self._positions  # (N, 3)
@@ -329,8 +332,11 @@ class GLMoleculeWidget(_QOpenGLWidget):
         y1 = y * cos_x - z1 * sin_x
         z2 = y * sin_x + z1 * cos_x
 
-        sx = cx + x1 * self.zoom
-        sy = cy - y1 * self.zoom
+        x2 = x1 * cos_z - y1 * sin_z
+        y2 = x1 * sin_z + y1 * cos_z
+
+        sx = cx + x2 * self.zoom
+        sy = cy - y2 * self.zoom
         sz = z2
 
         # Display radius scaled
@@ -345,7 +351,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         if self._bond_starts is not None and len(self._bond_starts) > 0:
             self._draw_bonds_painter(
                 painter, cx, cy,
-                cos_x, sin_x, cos_y, sin_y,
+                cos_x, sin_x, cos_y, sin_y, cos_z, sin_z
             )
 
         # ── Draw atoms ────────────────────────────────────────────────
@@ -410,7 +416,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         painter.setBrush(QBrush(gradient))
         painter.drawEllipse(QRectF(sx - radius, sy - radius, radius * 2, radius * 2))
 
-    def _draw_bonds_painter(self, painter, cx, cy, cos_x, sin_x, cos_y, sin_y):
+    def _draw_bonds_painter(self, painter, cx, cy, cos_x, sin_x, cos_y, sin_y, cos_z=1.0, sin_z=0.0):
         """Draw bonds as simple coloured lines (split-coloured)."""
         starts = self._bond_starts   # (M, 3)
         ends = self._bond_ends       # (M, 3)
@@ -419,17 +425,23 @@ class GLMoleculeWidget(_QOpenGLWidget):
             return
 
         # Project start points
-        sx1 = starts[:, 0] * cos_y + starts[:, 2] * sin_y
+        sx1_t = starts[:, 0] * cos_y + starts[:, 2] * sin_y
         sz1_tmp = -starts[:, 0] * sin_y + starts[:, 2] * cos_y
-        sy1 = starts[:, 1] * cos_x - sz1_tmp * sin_x
+        sy1_t = starts[:, 1] * cos_x - sz1_tmp * sin_x
+        
+        sx1 = sx1_t * cos_z - sy1_t * sin_z
+        sy1 = sx1_t * sin_z + sy1_t * cos_z
 
         psx1 = cx + sx1 * self.zoom
         psy1 = cy - sy1 * self.zoom
 
         # Project end points
-        sx2 = ends[:, 0] * cos_y + ends[:, 2] * sin_y
+        sx2_t = ends[:, 0] * cos_y + ends[:, 2] * sin_y
         sz2_tmp = -ends[:, 0] * sin_y + ends[:, 2] * cos_y
-        sy2 = ends[:, 1] * cos_x - sz2_tmp * sin_x
+        sy2_t = ends[:, 1] * cos_x - sz2_tmp * sin_x
+        
+        sx2 = sx2_t * cos_z - sy2_t * sin_z
+        sy2 = sx2_t * sin_z + sy2_t * cos_z
 
         psx2 = cx + sx2 * self.zoom
         psy2 = cy - sy2 * self.zoom
@@ -614,6 +626,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         """Reset camera to defaults and re-fit."""
         self.rot_x = 20.0
         self.rot_y = -30.0
+        self.rot_z = 0.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         if self.molecule:
@@ -638,8 +651,16 @@ class GLMoleculeWidget(_QOpenGLWidget):
         if self._mouse_button == Qt.MouseButton.LeftButton:
             self.rot_y += dx * 0.5
             self.rot_x += dy * 0.5
-        elif self._mouse_button in (Qt.MouseButton.MiddleButton,
-                                     Qt.MouseButton.RightButton):
+        elif self._mouse_button == Qt.MouseButton.RightButton:
+            cx = self.width() / 2.0
+            cy = self.height() / 2.0
+            ang1 = math.atan2(self._last_mouse_pos.y() - cy, self._last_mouse_pos.x() - cx)
+            ang2 = math.atan2(event.position().y() - cy, event.position().x() - cx)
+            angle_diff = ang2 - ang1
+            if angle_diff > math.pi: angle_diff -= 2 * math.pi
+            elif angle_diff < -math.pi: angle_diff += 2 * math.pi
+            self.rot_z -= math.degrees(angle_diff)
+        elif self._mouse_button == Qt.MouseButton.MiddleButton:
             self.pan_x += dx
             self.pan_y += dy
 

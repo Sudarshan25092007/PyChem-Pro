@@ -207,85 +207,94 @@ def _render_print_content(window, painter, page_rect, is_preview=False):
 
     # Render each viewer into its own QImage
     def _render_viewer(viewer, width, height, viewer_name="viewer"):
-        img = QImage(int(width), int(height),
-                     QImage.Format.Format_ARGB32_Premultiplied)
-        img.fill(QColor(255, 255, 255))
-        p = QPainter(img)
-        try:
-            if hasattr(viewer, '_render'):
-                # Both 3D and 2D viewers have _render method
-                # 3D: _render(painter, w, h, is_export, scale)
-                # 2D: _render(painter, w, h)
+        # Check if 2D or 3D viewer based on attributes
+        # 3D viewer has 'zoom', 'pan_x', 'pan_y'
+        # 2D viewer has '_scale', '_offset_x', '_offset_y'
+        is_3d = hasattr(viewer, 'zoom') and hasattr(viewer, 'pan_x')
+        
+        if is_3d:
+            # 3D viewer - use the working scaling approach
+            # Calculate export scale based on target dimensions vs widget size
+            widget_width = viewer.width()
+            widget_height = viewer.height()
+            scale_x = width / widget_width if widget_width > 0 else 1.0
+            scale_y = height / widget_height if widget_height > 0 else 1.0
+            export_scale = min(scale_x, scale_y)
+            
+            img = QImage(int(width), int(height),
+                         QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QColor(255, 255, 255))
+            p = QPainter(img)
+            try:
                 old_bg = getattr(viewer, 'bg_color', None)
                 if old_bg is not None:
                     viewer.bg_color = QColor(255, 255, 255)
                 
-                # Check if 2D or 3D viewer based on method signature
-                import inspect
-                sig = inspect.signature(viewer._render)
-                params = list(sig.parameters.keys())
-                
-                if 'is_export' in params:
-                    # 3D viewer
+                # Scale zoom and pan by export_scale to maintain the same view
+                _saved_zoom = viewer.zoom
+                _saved_pan_x = viewer.pan_x
+                _saved_pan_y = viewer.pan_y
+                try:
+                    viewer.zoom *= export_scale
+                    viewer.pan_x *= export_scale
+                    viewer.pan_y *= export_scale
                     viewer._render(p, int(width), int(height),
-                                   is_export=True, export_scale=1.0)
-                else:
-                    # 2D viewer - check if it has coordinates
-                    if hasattr(viewer, 'coords_2d') and viewer.coords_2d:
-                        # Temporarily adjust scale/offset for print dimensions
-                        _saved_scale = viewer._scale
-                        _saved_ox = viewer._offset_x
-                        _saved_oy = viewer._offset_y
-                        try:
-                            # Compute fit for print dimensions
-                            coords = viewer.coords_2d
-                            visible = set(coords.keys())
-                            xs = [c[0] for c in coords.values() if c[0] is not None]
-                            ys = [c[1] for c in coords.values() if c[1] is not None]
-                            if xs and ys:
-                                min_x, max_x = min(xs), max(xs)
-                                min_y, max_y = min(ys), max(ys)
-                                span_x = max_x - min_x or 1
-                                span_y = max_y - min_y or 1
-                                cx = (min_x + max_x) / 2
-                                cy = (min_y + max_y) / 2
-                                margin = 40
-                                scale_x = (width - margin * 2) / span_x
-                                scale_y = (height - margin * 2) / span_y
-                                viewer._scale = min(scale_x, scale_y, 80)
-                                viewer._offset_x = width / 2 - cx * viewer._scale
-                                viewer._offset_y = height / 2 + cy * viewer._scale
-                            # Render with is_export=True
-                            viewer._render(p, int(width), int(height), is_export=True, export_scale=1.0)
-                        finally:
-                            # Restore original view settings
-                            viewer._scale = _saved_scale
-                            viewer._offset_x = _saved_ox
-                            viewer._offset_y = _saved_oy
-                    else:
-                        # Draw placeholder for empty 2D view
-                        p.setPen(QColor(150, 150, 150))
-                        font = QFont("Arial", 12)
-                        p.setFont(font)
-                        p.drawText(10, int(height/2), "2D view not available")
+                                   is_export=True, export_scale=export_scale)
+                finally:
+                    viewer.zoom = _saved_zoom
+                    viewer.pan_x = _saved_pan_x
+                    viewer.pan_y = _saved_pan_y
                 
                 if old_bg is not None:
                     viewer.bg_color = old_bg
-            else:
-                # Fallback: widget's default render
-                viewer.render(p)
-        except Exception as e:
-            print(f"[PRINT RENDER ERROR] {viewer_name}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Draw error indicator on image
-            p.setPen(QColor(255, 0, 0))
-            font = QFont("Arial", 10)
-            p.setFont(font)
-            p.drawText(10, 20, f"Render error: {str(e)[:50]}")
-        finally:
-            p.end()
-        return img
+            except Exception as e:
+                print(f"[PRINT RENDER ERROR] {viewer_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                p.setPen(QColor(255, 0, 0))
+                font = QFont("Arial", 10)
+                p.setFont(font)
+                p.drawText(10, 20, f"Render error: {str(e)[:50]}")
+            finally:
+                p.end()
+            return img
+        else:
+            # 2D viewer - render at widget's original size and let Qt scale to fit
+            # This preserves font readability better than scaling down the molecule
+            widget_width = viewer.width()
+            widget_height = viewer.height()
+            
+            img = QImage(int(widget_width), int(widget_height),
+                         QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QColor(255, 255, 255))
+            p = QPainter(img)
+            try:
+                old_bg = getattr(viewer, 'bg_color', None)
+                if old_bg is not None:
+                    viewer.bg_color = QColor(255, 255, 255)
+                
+                if hasattr(viewer, 'coords_2d') and viewer.coords_2d:
+                    viewer._render(p, int(widget_width), int(widget_height), is_export=True)
+                else:
+                    # Draw placeholder for empty 2D view
+                    p.setPen(QColor(150, 150, 150))
+                    font = QFont("Arial", 12)
+                    p.setFont(font)
+                    p.drawText(10, int(widget_height/2), "2D view not available")
+                
+                if old_bg is not None:
+                    viewer.bg_color = old_bg
+            except Exception as e:
+                print(f"[PRINT RENDER ERROR] {viewer_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                p.setPen(QColor(255, 0, 0))
+                font = QFont("Arial", 10)
+                p.setFont(font)
+                p.drawText(10, 20, f"Render error: {str(e)[:50]}")
+            finally:
+                p.end()
+            return img
 
     # Render 2D
     v2d = window.viewer_2d
@@ -296,7 +305,7 @@ def _render_print_content(window, painter, page_rect, is_preview=False):
     img_3d = _render_viewer(v3d, bot_rect.width(), bot_rect.height(), "3D")
 
     # Draw headers
-    title_font = QFont("Helvetica", 14)
+    title_font = QFont("Helvetica", 9)
     title_font.setBold(True)
     painter.setFont(title_font)
     painter.setPen(QColor(0, 0, 0))
@@ -321,8 +330,8 @@ def _render_print_content(window, painter, page_rect, is_preview=False):
                           Qt.AlignmentFlag.AlignVCenter),
                       header_text)
 
-    # Draw labels
-    label_font = QFont("Helvetica", 10)
+    # Draw view labels (2D View / 3D View)
+    label_font = QFont("Helvetica", 9)
     label_font.setBold(True)
     painter.setFont(label_font)
     painter.drawText(QRectF(margin, top_rect.y() - margin * 0.6,

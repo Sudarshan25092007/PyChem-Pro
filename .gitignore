@@ -4,8 +4,7 @@ testing/
 tests/
 
 Prompts.txt
-run_app.bat
-
+*.bat
 *.mol2
 *.pdb
 *.pyc

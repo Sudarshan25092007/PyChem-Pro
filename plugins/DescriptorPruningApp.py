@@ -215,7 +215,7 @@ class DescriptorPruningPlugin(BasePlugin):
     def __init__(self):
         super().__init__(PluginInfo(
             name="Descriptor Pruning (Auto-Discovery)",
-            version="1.1.0",
+            version="1.0.0",
             description="Removes highly constant and correlated descriptors across CSV datasets.",
             author="SMILES Team",
             plugin_type=PluginType.ANALYSIS,

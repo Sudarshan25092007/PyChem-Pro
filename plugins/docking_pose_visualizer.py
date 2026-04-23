@@ -27,7 +27,7 @@ Author:
     Dr. Vijay Masand, with documentation improvements by PyChem Team
 
 Version:
-    2.3.0
+    1.0.0
 
 License:
     MIT
@@ -1031,7 +1031,7 @@ class DockingPoseVisualizer(BasePlugin):
     
     Plugin Metadata:
         - Name: 2D-Molecular-Docking-Pose
-        - Version: 2.3.0
+        - Version: 1.0.0
         - Type: VISUALIZATION
         - Author: Dr. Vijay Masand
     
@@ -1046,7 +1046,7 @@ class DockingPoseVisualizer(BasePlugin):
         """Initialize the plugin with metadata and setup."""
         info = PluginInfo(
             name="2D-Molecular-Docking-Pose",
-            version="2.3.0",
+            version="1.0.0",
             description="Professional 2D Molecular Docking Pose interaction mapper.",
             author="Dr. Vijay Masand",
             plugin_type=PluginType.VISUALIZATION

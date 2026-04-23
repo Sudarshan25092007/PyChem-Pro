@@ -438,7 +438,7 @@ class SplineCalculator:
 
 def render_protein_cartoon(painter, molecule: Molecule,
                           width: int, height: int,
-                          rot_x: float = 0, rot_y: float = 0,
+                          rot_x: float = 0, rot_y: float = 0, rot_z: float = 0,
                           pan_x: float = 0, pan_y: float = 0,
                           zoom: float = 1.0,
                           color_scheme: str = "secondary_structure",
@@ -472,6 +472,8 @@ def render_protein_cartoon(painter, molecule: Molecule,
     sin_x = math.sin(math.radians(rot_x))
     cos_y = math.cos(math.radians(rot_y))
     sin_y = math.sin(math.radians(rot_y))
+    cos_z = math.cos(math.radians(rot_z))
+    sin_z = math.sin(math.radians(rot_z))
     cx = width / 2.0 + pan_x
     cy = height / 2.0 + pan_y
     
@@ -480,10 +482,14 @@ def render_protein_cartoon(painter, molecule: Molecule,
     vz = vertices[:, 2] * zoom
     
     # Rotate Y then X
-    rx = vx * cos_y + vz * sin_y
+    rx_tmp = vx * cos_y + vz * sin_y
     rz = -vx * sin_y + vz * cos_y
-    ry = vy * cos_x - rz * sin_x
+    ry_tmp = vy * cos_x - rz * sin_x
     rz2 = vy * sin_x + rz * cos_x
+    
+    # Rotate Z
+    rx = rx_tmp * cos_z - ry_tmp * sin_z
+    ry = rx_tmp * sin_z + ry_tmp * cos_z
     
     sx = cx + rx       # screen x
     sy = cy - ry       # screen y (inverted)
@@ -639,7 +645,7 @@ def render_protein_cartoon(painter, molecule: Molecule,
 
 def render_protein_ribbon(painter, molecule: Molecule,
                          width: int, height: int,
-                         rot_x: float = 0, rot_y: float = 0,
+                         rot_x: float = 0, rot_y: float = 0, rot_z: float = 0,
                          pan_x: float = 0, pan_y: float = 0,
                          zoom: float = 1.0,
                          color_scheme: str = "secondary_structure"):
@@ -700,6 +706,7 @@ def render_protein_ribbon(painter, molecule: Molecule,
     
     cos_x, sin_x = math.cos(math.radians(rot_x)), math.sin(math.radians(rot_x))
     cos_y, sin_y = math.cos(math.radians(rot_y)), math.sin(math.radians(rot_y))
+    cos_z, sin_z = math.cos(math.radians(rot_z)), math.sin(math.radians(rot_z))
     cx, cy = width / 2 + pan_x, height / 2 + pan_y
     
     def project_point(x, y, z):
@@ -710,7 +717,10 @@ def render_protein_ribbon(painter, molecule: Molecule,
         z1 = -x * sin_y + z * cos_y
         y1 = y * cos_x - z1 * sin_x
         z2 = y * sin_x + z1 * cos_x
-        return (cx + x1, cy - y1, z2)
+        
+        x2 = x1 * cos_z - y1 * sin_z
+        y2 = x1 * sin_z + y1 * cos_z
+        return (cx + x2, cy - y2, z2)
     
     CHAIN_COLORS = [
         QColor(0, 100, 255), QColor(255, 0, 0), QColor(0, 200, 0),

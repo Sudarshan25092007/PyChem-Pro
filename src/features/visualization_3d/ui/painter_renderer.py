@@ -161,6 +161,8 @@ class PainterRenderer:
         sin_x = math.sin(math.radians(v.rot_x))
         cos_y = math.cos(math.radians(v.rot_y))
         sin_y = math.sin(math.radians(v.rot_y))
+        cos_z = math.cos(math.radians(getattr(v, 'rot_z', 0.0)))
+        sin_z = math.sin(math.radians(getattr(v, 'rot_z', 0.0)))
 
         projected = []
         for atom in v.molecule.atoms:
@@ -176,9 +178,12 @@ class PainterRenderer:
             z1 = -x * sin_y + z * cos_y
             y1 = y * cos_x - z1 * sin_x
             z2 = y * sin_x + z1 * cos_x
+            
+            x2 = x1 * cos_z - y1 * sin_z
+            y2 = x1 * sin_z + y1 * cos_z
 
-            sx = cx + x1 * v.zoom
-            sy = cy - y1 * v.zoom
+            sx = cx + x2 * v.zoom
+            sy = cy - y2 * v.zoom
             sz = z2
 
             # Display radius with user scale
@@ -677,6 +682,7 @@ class PainterRenderer:
                     pan_x=v.pan_x,
                     pan_y=v.pan_y,
                     zoom=v.zoom,
+                    rot_z=getattr(v, 'rot_z', 0.0),
                     color_scheme="secondary_structure",
                     use_ssao=getattr(v, 'use_ssao', False),
                     use_gouraud=getattr(v, 'use_gouraud', False)
@@ -692,6 +698,7 @@ class PainterRenderer:
                     pan_x=v.pan_x,
                     pan_y=v.pan_y,
                     zoom=v.zoom,
+                    rot_z=getattr(v, 'rot_z', 0.0),
                     color_scheme="rainbow"
                 )
             elif v.render_mode == 'backbone':
@@ -785,6 +792,8 @@ class PainterRenderer:
             sin_x = math.sin(math.radians(v.rot_x))
             cos_y = math.cos(math.radians(v.rot_y))
             sin_y = math.sin(math.radians(v.rot_y))
+            cos_z = math.cos(math.radians(getattr(v, 'rot_z', 0.0)))
+            sin_z = math.sin(math.radians(getattr(v, 'rot_z', 0.0)))
 
             x, y, z = ca_atom.x, ca_atom.y, ca_atom.z
             x1 = x * cos_y + z * sin_y
@@ -792,8 +801,11 @@ class PainterRenderer:
             y1 = y * cos_x - z1 * sin_x
             z2 = y * sin_x + z1 * cos_x
 
-            sx = cx + x1 * v.zoom
-            sy = cy - y1 * v.zoom
+            x2 = x1 * cos_z - y1 * sin_z
+            y2 = x1 * sin_z + y1 * cos_z
+
+            sx = cx + x2 * v.zoom
+            sy = cy - y2 * v.zoom
 
             chains[chain_id].append({
                 'res_seq': res_seq,
