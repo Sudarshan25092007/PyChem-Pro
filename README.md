@@ -714,7 +714,14 @@ See `docs/` for detailed specs and implementation plans.
 
 ## License
 
-To be determined. The intent is an OSI-approved permissive license (MIT or Apache 2.0) so the project can be freely used in universities and by researchers. Check `LICENSE` in the repository root once added.
+PyChem is licensed under the **[Polyform Noncommercial License 1.0.0](LICENSE)**.
+
+Copyright (c) 2026 Vijay Masand and Gaurav Masand
+
+- **Personal and educational use** — free to use, modify, and distribute.
+- **Commercial use** — strictly prohibited. This includes using PyChem as part of a paid service, distributing it for a fee, or relying on it to generate revenue.
+
+See the `LICENSE` file for the full legal text.
 
 Vendored OASA code retains its original BSD-style license.
 
