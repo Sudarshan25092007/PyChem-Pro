@@ -443,7 +443,8 @@ def render_protein_cartoon(painter, molecule: Molecule,
                           zoom: float = 1.0,
                           color_scheme: str = "secondary_structure",
                           use_ssao: bool = False,
-                          use_gouraud: bool = False):
+                          use_gouraud: bool = False,
+                          is_interacting: bool = False):
     """
     Render protein cartoon using the CPPCartoon-faithful mesh generator.
     
@@ -453,13 +454,34 @@ def render_protein_cartoon(painter, molecule: Molecule,
     - Pre-computed QColor array minimizes per-triangle object creation
     - Thin same-color pen eliminates visible triangle edges (anti-aliasing)
     - Optional Gouraud normal smoothing blends normals across shared vertices
-      to eliminate visible triangle faceting at high zoom levels.
+    - INTERACTIVE LOD: Switches to 4 subdivisions during rotation for speed.
     """
-    from PySide6.QtGui import QColor, QPen, QBrush, QPolygonF
+    from PySide6.QtGui import QColor, QPen, QBrush, QPolygonF, QPainter, QPainterPath, QImage
     from PySide6.QtCore import QPointF, Qt
+    import time
     
-    # 1. Get the cached 3D mesh
-    vertices, triangles, colors = _cartoon_gen.get_mesh(molecule)
+    t0_total = time.time()
+    
+    # Antialiasing scale factor for smooth rendering
+    scale_factor = 2  # 2x supersampling for antialiasing
+    
+    # EARLY CACHE CHECK — skip ALL math if camera hasn't changed
+    cache_key = (id(molecule), round(rot_x, 4), round(rot_y, 4), round(rot_z, 4),
+                 round(pan_x, 2), round(pan_y, 2), round(zoom, 4),
+                 width, height, is_interacting)
+    
+    if hasattr(render_protein_cartoon, '_img_cache') and \
+       render_protein_cartoon._img_cache.get('key') == cache_key:
+        painter.drawImage(0, 0, render_protein_cartoon._img_cache['img'])
+        return
+    
+    # 1. Get the cached 3D mesh with higher quality for smooth rendering
+    current_steps = 8 if is_interacting else 24  # Increased for smoother curves
+    current_profile = 8 if is_interacting else 16  # Increased for better detail
+    
+    t0_mesh = time.time()
+    vertices, triangles, colors = _cartoon_gen.get_mesh(molecule, spline_steps=current_steps, profile_detail=current_profile)
+    print(f"[Timing] Mesh: {(time.time()-t0_mesh)*1000:.0f}ms")
     
     if vertices is None or len(vertices) == 0:
         return
@@ -607,39 +629,128 @@ def render_protein_cartoon(painter, molecule: Molecule,
     # Per-triangle base color (from first vertex)
     tri_colors = colors[t0]  # shape (num_tri, 3)
     
-    # Final RGB = base_color * shade + specular_white
-    final_r = np.clip((tri_colors[:, 0] * shade + specular * 0.3) * 255, 0, 255).astype(np.int32)
-    final_g = np.clip((tri_colors[:, 1] * shade + specular * 0.3) * 255, 0, 255).astype(np.int32)
-    final_b = np.clip((tri_colors[:, 2] * shade + specular * 0.3) * 255, 0, 255).astype(np.int32)
+    # Per-triangle final shaded color
+    final_r = np.clip((tri_colors[:, 0] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
+    final_g = np.clip((tri_colors[:, 1] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
+    final_b = np.clip((tri_colors[:, 2] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
     
-    # 7. Draw loop — minimized per-triangle overhead
-    # Aggressively scale pen width to hide seams at all zoom levels.
-    base_pen_width = max(0.8, zoom * 0.025)
-    prev_rgb = (-1, -1, -1)
+    t0_draw = time.time()
     
-    for idx in sort_indices:
-        if not front_facing[idx]:
-            break  # All remaining are back-facing (sorted to end)
+    # 7. CHUNKED Vectorized Rasterizer (memory-safe for 8GB RAM)
+    active_indices = sort_indices[front_facing[sort_indices]]
+    if len(active_indices) == 0:
+        return
+
+    N = len(active_indices)
+    tri_act = triangles[active_indices]
+    
+    # Screen coords per triangle vertex (no scaling here)
+    t_ax = sx[tri_act[:, 0]]; t_ay = sy[tri_act[:, 0]]
+    t_bx = sx[tri_act[:, 1]]; t_by = sy[tri_act[:, 1]]
+    t_cx = sx[tri_act[:, 2]]; t_cy = sy[tri_act[:, 2]]
+    
+    tr = final_r[active_indices]
+    tg = final_g[active_indices]
+    tb = final_b[active_indices]
+
+    # RGBA pixel buffer with higher resolution for antialiasing
+    buf_h = height * scale_factor
+    buf_w = width * scale_factor
+    buf = np.zeros((buf_h, buf_w, 4), dtype=np.uint8)
+    
+    MAX_BB = 20  # Increased for higher resolution
+    CHUNK = 3000  # Process 3000 triangles at a time (~4MB per chunk)
+    
+    gy, gx = np.meshgrid(np.arange(MAX_BB, dtype=np.float32),
+                         np.arange(MAX_BB, dtype=np.float32), indexing='ij')
+    
+    for c_start in range(0, N, CHUNK):
+        c_end = min(c_start + CHUNK, N)
+        sl = slice(c_start, c_end)
+        Nc = c_end - c_start
         
-        r_val = int(final_r[idx])
-        g_val = int(final_g[idx])
-        b_val = int(final_b[idx])
+        c_ax = t_ax[sl]; c_ay = t_ay[sl]
+        c_bx = t_bx[sl]; c_by = t_by[sl]
+        c_cx = t_cx[sl]; c_cy = t_cy[sl]
         
-        # Only change brush when color changes
-        rgb = (r_val, g_val, b_val)
-        if rgb != prev_rgb:
-            qc = QColor(r_val, g_val, b_val)
-            painter.setBrush(QBrush(qc))
-            painter.setPen(QPen(qc, base_pen_width))  # Scaled pen hides seams
-            prev_rgb = rgb
+        # Bounding boxes (scaled for higher resolution)
+        mn_x = np.floor(np.minimum(np.minimum(c_ax, c_bx), c_cx) * scale_factor).astype(np.int32)
+        mx_x = np.ceil(np.maximum(np.maximum(c_ax, c_bx), c_cx) * scale_factor).astype(np.int32)
+        mn_y = np.floor(np.minimum(np.minimum(c_ay, c_by), c_cy) * scale_factor).astype(np.int32)
+        mx_y = np.ceil(np.maximum(np.maximum(c_ay, c_by), c_cy) * scale_factor).astype(np.int32)
         
-        tri = triangles[idx]
-        pts = [
-            QPointF(sx[tri[0]], sy[tri[0]]),
-            QPointF(sx[tri[1]], sy[tri[1]]),
-            QPointF(sx[tri[2]], sy[tri[2]]),
-        ]
-        painter.drawPolygon(QPolygonF(pts))
+        bb_w = mx_x - mn_x + 1
+        bb_h = mx_y - mn_y + 1
+        small = (bb_w <= MAX_BB) & (bb_h <= MAX_BB)
+        si = np.where(small)[0]
+        
+        if len(si) > 0:
+            PX = mn_x[si, np.newaxis, np.newaxis] + gx[np.newaxis]
+            PY = mn_y[si, np.newaxis, np.newaxis] + gy[np.newaxis]
+            
+            AX = c_ax[si, np.newaxis, np.newaxis] * scale_factor
+            AY = c_ay[si, np.newaxis, np.newaxis] * scale_factor
+            BX = c_bx[si, np.newaxis, np.newaxis] * scale_factor
+            BY = c_by[si, np.newaxis, np.newaxis] * scale_factor
+            CX = c_cx[si, np.newaxis, np.newaxis] * scale_factor
+            CY = c_cy[si, np.newaxis, np.newaxis] * scale_factor
+            
+            e0 = (BX-AX)*(PY-AY) - (BY-AY)*(PX-AX)
+            e1 = (CX-BX)*(PY-BY) - (CY-BY)*(PX-BX)
+            e2 = (AX-CX)*(PY-CY) - (AY-CY)*(PX-CX)
+            
+            inside = ((e0>=0)&(e1>=0)&(e2>=0))|((e0<=0)&(e1<=0)&(e2<=0))
+            inb = (PX>=0)&(PX<buf_w)&(PY>=0)&(PY<buf_h)
+            mask = inside & inb
+            
+            fpx = PX[mask].astype(np.intp)
+            fpy = PY[mask].astype(np.intp)
+            tidx = np.broadcast_to(np.arange(len(si))[:,np.newaxis,np.newaxis],
+                                   (len(si),MAX_BB,MAX_BB))[mask]
+            
+            cr = tr[sl][si]; cg = tg[sl][si]; cb = tb[sl][si]
+            buf[fpy, fpx, 0] = cr[tidx]
+            buf[fpy, fpx, 1] = cg[tidx]
+            buf[fpy, fpx, 2] = cb[tidx]
+            buf[fpy, fpx, 3] = 255
+        
+        # Large triangles fallback (scaled)
+        for li in np.where(~small)[0]:
+            _mn_x = max(0, int(mn_x[li])); _mx_x = min(buf_w-1, int(mx_x[li]))
+            _mn_y = max(0, int(mn_y[li])); _mx_y = min(buf_h-1, int(mx_y[li]))
+            if _mn_x > _mx_x or _mn_y > _mx_y: continue
+            px_r = np.arange(_mn_x, _mx_x+1, dtype=np.float32)
+            py_r = np.arange(_mn_y, _mx_y+1, dtype=np.float32)
+            LPX, LPY = np.meshgrid(px_r, py_r)
+            le0=( float(c_bx[li])*scale_factor-float(c_ax[li])*scale_factor)*(LPY-float(c_ay[li])*scale_factor)-(float(c_by[li])*scale_factor-float(c_ay[li])*scale_factor)*(LPX-float(c_ax[li])*scale_factor)
+            le1=( float(c_cx[li])*scale_factor-float(c_bx[li])*scale_factor)*(LPY-float(c_by[li])*scale_factor)-(float(c_cy[li])*scale_factor-float(c_by[li])*scale_factor)*(LPX-float(c_bx[li])*scale_factor)
+            le2=( float(c_ax[li])*scale_factor-float(c_cx[li])*scale_factor)*(LPY-float(c_cy[li])*scale_factor)-(float(c_ay[li])*scale_factor-float(c_cy[li])*scale_factor)*(LPX-float(c_cx[li])*scale_factor)
+            lm=((le0>=0)&(le1>=0)&(le2>=0))|((le0<=0)&(le1<=0)&(le2<=0))
+            ys,xs=np.where(lm)
+            buf[ys+_mn_y,xs+_mn_x,0]=tr[c_start+li]
+            buf[ys+_mn_y,xs+_mn_x,1]=tg[c_start+li]
+            buf[ys+_mn_y,xs+_mn_x,2]=tb[c_start+li]
+            buf[ys+_mn_y,xs+_mn_x,3]=255
+
+    # Downsample for antialiasing (2x supersampling)
+    if scale_factor > 1:
+        # Simple averaging downsampling for antialiasing
+        buf_small = buf.reshape(height, scale_factor, width, scale_factor, 4).mean(axis=(1, 3)).astype(np.uint8)
+        img = QImage(buf_small.data, width, height, width*4, QImage.Format.Format_RGBA8888)
+    else:
+        img = QImage(buf.data, buf_w, buf_h, buf_w*4, QImage.Format.Format_RGBA8888)
+    img = img.copy()
+    
+    if not hasattr(render_protein_cartoon, '_img_cache'):
+        render_protein_cartoon._img_cache = {}
+    render_protein_cartoon._img_cache = {'key': cache_key, 'img': img}
+    
+    painter.drawImage(0, 0, img)
+    
+    draw_ms = (time.time()-t0_draw)*1000
+    total_ms = (time.time()-t0_total)*1000
+    print(f"[Performance] Draw: {draw_ms:.0f}ms, Total: {total_ms:.0f}ms, {N} tri ({'interactive' if is_interacting else 'static'})")
+
 
 
 

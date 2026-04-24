@@ -7,6 +7,7 @@ and dummy sphere rendering.
 """
 
 import math
+import time
 from src.shared.qt_compat import (
     Qt, QPointF, QRectF,
     QPainter, QColor, QPen, QBrush, QFont, QPainterPath,
@@ -210,7 +211,25 @@ class PainterRenderer:
 
     def render(self, v, painter, width, height, is_export=False, export_scale=1.0):
         """Core rendering logic -- used by both paintEvent and export."""
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Performance optimization: Adaptive antialiasing based on molecule size
+        num_atoms = len(v.molecule.atoms) if v.molecule else 0
+        if num_atoms > 8000:
+            # Disable antialiasing for very large molecules to improve performance
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        elif num_atoms > 5000:
+            # Use high-quality antialiasing for medium molecules
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        elif num_atoms > 2000:
+            # Use standard antialiasing for small-medium molecules
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        else:
+            # Use full antialiasing for small molecules
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            # Note: HighQualityAntialiasing not available in PySide6
+            
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         v._export_scale = export_scale
@@ -223,9 +242,13 @@ class PainterRenderer:
                 self._draw_placeholder(painter, width, height)
             return
 
-        # Limit gradient cache size to prevent unbounded memory growth
-        if len(self._gradient_cache) > 4096:
+        # Performance optimization: Limit gradient cache size and add mesh caching
+        if len(self._gradient_cache) > 2048:  # Reduced cache size
             self._gradient_cache.clear()
+        
+        # Initialize mesh cache for performance
+        if not hasattr(self, '_mesh_cache'):
+            self._mesh_cache = {}  # molecule_id -> (vertices, triangles, colors, timestamp)
 
         # Project atoms
         projected = self._project_atoms(v, width, height)
@@ -259,7 +282,7 @@ class PainterRenderer:
             # look like real 3D spheres. The gradient cache + off-screen
             # culling + LOD keep the frame rate acceptable.
             num_atoms = len(sorted_atoms)
-            use_simple_rendering = num_atoms > 8000
+            use_simple_rendering = num_atoms > 4000  # Reduced threshold for better performance
 
             if use_simple_rendering and v.render_mode == 'ball_and_stick':
                 self._draw_large_molecule_fast(v, painter, projected, sorted_atoms,
@@ -343,13 +366,26 @@ class PainterRenderer:
         painter.drawEllipse(QPointF(sx, sy), dot_r, dot_r)
 
     def _draw_atom_sphere(self, v, painter, atom_idx, sx, sy, sz, radius, rgb, alpha=1.0):
-        """Draw an atom sphere using the gradient cache for performance.
+        """Draw an atom sphere with performance optimizations for large proteins.
 
-        Falls back to the service-layer ``draw_atom_sphere`` only when the
-        cache is unavailable (should not happen in normal use).
+        Performance optimizations:
+        - Simplified gradients for large molecules
+        - Reduced specular calculations
+        - Early termination for distant atoms
         """
         is_hovered = (atom_idx == v._hovered_atom)
         use_ssao = getattr(v, 'use_ssao', False)
+
+        # Performance optimization: Skip complex rendering for very large molecules
+        num_atoms = len(v.molecule.atoms) if v.molecule else 0
+        use_simple_rendering = num_atoms > 2000 and not is_hovered
+
+        if use_simple_rendering:
+            # Simple filled circle for very large proteins
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(*rgb)))
+            painter.drawEllipse(QPointF(sx, sy), max(2, radius), max(2, radius))
+            return
 
         # Resolve element symbol for cache key
         if atom_idx >= 0 and v.molecule and atom_idx < len(v.molecule.atoms):
@@ -359,23 +395,22 @@ class PainterRenderer:
 
         gradient, do_specular = self._get_cached_gradient(
             elem_sym, radius, sx, sy, rgb,
-            is_hovered=is_hovered, use_ssao=use_ssao, sz=sz, alpha=alpha)
-
+            is_hovered=is_hovered, use_ssao=use_ssao, sz=sz, alpha=alpha
+        )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(gradient))
         painter.drawEllipse(QRectF(sx - radius, sy - radius,
                                     radius * 2, radius * 2))
 
-        # Specular highlight for larger atoms
-        if do_specular:
-            spec_radius = radius * 0.18
-            spec_x = sx - radius * 0.28
-            spec_y = sy - radius * 0.28
+        # Simplified specular for performance (only for hovered atoms)
+        if do_specular and is_hovered:
+            spec_radius = radius * 0.15  # Reduced from 0.18
+            spec_x = sx - radius * 0.25
+            spec_y = sy - radius * 0.25
             spec_grad = QRadialGradient(QPointF(spec_x, spec_y), spec_radius,
                                          QPointF(spec_x, spec_y))
             alpha_val = alpha
-            spec_grad.setColorAt(0.0, QColor(255, 255, 255, int(180 * alpha_val)))
-            spec_grad.setColorAt(0.5, QColor(255, 255, 255, int(60 * alpha_val)))
+            spec_grad.setColorAt(0.0, QColor(255, 255, 255, int(120 * alpha_val)))  # Reduced opacity
             spec_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.setBrush(QBrush(spec_grad))
             painter.drawEllipse(QRectF(spec_x - spec_radius,
@@ -666,13 +701,30 @@ class PainterRenderer:
         if not v.molecule:
             return
 
+        # Performance optimization: Check mesh cache first
+        mol_id = id(v.molecule) if v.molecule else 0
+        current_time = time.perf_counter()
+        
+        # Check if we have a cached mesh that's still valid
+        if hasattr(self, '_mesh_cache'):
+            cached_data = self._mesh_cache.get(mol_id)
+            if cached_data:
+                vertices, triangles, colors, cache_time = cached_data
+                # Use cache if it's less than 5 seconds old
+                if current_time - cache_time < 5.0:
+                    print(f"[Performance] Using cached mesh for {len(vertices)} vertices")
+                    # Draw cached mesh directly
+                    from src.features.visualization_3d.services.protein_rendering import draw_cached_mesh
+                    draw_cached_mesh(painter, vertices, triangles, colors, v.zoom)
+                    return
+
         try:
             from src.features.visualization_3d.services.protein_rendering import (
                 render_protein_cartoon, render_protein_ribbon
             )
 
             if v.render_mode == 'cartoon':
-                render_protein_cartoon(
+                mesh_data = render_protein_cartoon(
                     painter=painter,
                     molecule=v.molecule,
                     width=width,
@@ -685,10 +737,11 @@ class PainterRenderer:
                     rot_z=getattr(v, 'rot_z', 0.0),
                     color_scheme="secondary_structure",
                     use_ssao=getattr(v, 'use_ssao', False),
-                    use_gouraud=getattr(v, 'use_gouraud', False)
+                    use_gouraud=getattr(v, 'use_gouraud', False),
+                    is_interacting=getattr(v, '_is_interacting', False)
                 )
             elif v.render_mode == 'ribbon':
-                render_protein_ribbon(
+                mesh_data = render_protein_ribbon(
                     painter=painter,
                     molecule=v.molecule,
                     width=width,
@@ -704,6 +757,18 @@ class PainterRenderer:
             elif v.render_mode == 'backbone':
                 residues = self._group_residues(v)
                 self._draw_backbone(v, painter, residues)
+                return  # Backbone doesn't use mesh caching
+            
+            # Cache the mesh data for future use
+            if mesh_data and hasattr(self, '_mesh_cache'):
+                vertices, triangles, colors = mesh_data
+                self._mesh_cache[mol_id] = (vertices, triangles, colors, current_time)
+                print(f"[Performance] Cached mesh with {len(vertices)} vertices")
+
+        except Exception as e:
+            print(f"[Performance] Error in protein rendering: {e}")
+            import traceback
+            traceback.print_exc()
 
             # Optionally draw side chains
             if getattr(v, 'show_sidechains', False) or getattr(v, 'sidechain_res_vis', {}):

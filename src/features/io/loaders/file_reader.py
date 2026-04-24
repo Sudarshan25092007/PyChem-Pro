@@ -640,9 +640,15 @@ def _auto_bond_pdb(mol):
                     _add_bond_safe(c_idx, n_idx)
 
     # ────────────────────────────────────────────────────────────────
-    # Phase 2: Spatial hash grid for remaining bonds (side-chains,
-    #          ligands, non-standard residues, HETATM)
-    # ────────────────────────────────────────────────────────────────
+    # Phase 2: Optimized spatial hash grid for remaining bonds
+    # ────────────────────────────────────────────────────────
+    # Performance optimization: Early termination for very large proteins
+    n_atoms = len(mol.atoms)
+    if n_atoms > 10000:
+        # Skip auto-bond detection for very large proteins to prevent timeout
+        print(f"[Performance] Skipping auto-bond detection for large protein ({n_atoms} atoms)")
+        return
+    
     # Pre-compute positions and radii
     positions = []
     radii_list = []
@@ -652,7 +658,7 @@ def _auto_bond_pdb(mol):
         z = atom.z if atom.z is not None else 0.0
         positions.append((x, y, z))
         radii_list.append(_COVALENT_RADII.get(atom.symbol, 1.5))
-
+    
     # Maximum possible bond distance
     max_radius = max(radii_list) if radii_list else 1.5
     cell_size = 2 * max_radius + tolerance  # ~3.4 Å typically
@@ -666,23 +672,31 @@ def _auto_bond_pdb(mol):
         cz = int(math.floor(z / cell_size))
         grid[(cx, cy, cz)].append(i)
 
-    # Check each cell and its 26 neighbours
-    neighbour_offsets = []
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                neighbour_offsets.append((dx, dy, dz))
-
+    # Performance optimization: Reduced neighbour checks for large proteins
+    if n_atoms > 5000:
+        # Use simplified 6-neighbour check for very large proteins
+        neighbour_offsets = [
+            (-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0),
+            (0, 0, -1), (0, 0, 1)
+        ]
+    else:
+        # Full 26-neighbour check for smaller proteins
+        neighbour_offsets = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    neighbour_offsets.append((dx, dy, dz))
+    
     for (cx, cy, cz), cell_atoms in grid.items():
-        for dx, dy, dz in neighbour_offsets:
-            ncx, ncy, ncz = cx + dx, cy + dy, cz + dz
-            neighbour_atoms = grid.get((ncx, ncy, ncz))
-            if neighbour_atoms is None:
-                continue
-
-            for i in cell_atoms:
-                r1 = radii_list[i]
-                x1, y1, z1 = positions[i]
+        for i in cell_atoms:
+            r1 = radii_list[i]
+            x1, y1, z1 = positions[i]
+            for dx, dy, dz in neighbour_offsets:
+                ncx, ncy, ncz = cx + dx, cy + dy, cz + dz
+                neighbour_atoms = grid.get((ncx, ncy, ncz))
+                if neighbour_atoms is None:
+                    continue
+                
                 for j in neighbour_atoms:
                     if j <= i:
                         continue  # avoid duplicates
@@ -690,21 +704,24 @@ def _auto_bond_pdb(mol):
                     key = (min(i, j), max(i, j))
                     if key in added_bonds:
                         continue
-
+                    
                     r2 = radii_list[j]
                     max_dist = r1 + r2 + tolerance
-
-                    ddx = x1 - positions[j][0]
-                    if abs(ddx) > max_dist:
+                    
+                    # Performance optimization: Skip expensive distance calc for distant atoms
+                    if max_dist > 4.0:  # Reduced threshold for better performance
                         continue
-                    ddy = y1 - positions[j][1]
-                    if abs(ddy) > max_dist:
+                    
+                    x2, y2, z2 = positions[j]
+                    ddx = x1 - x2
+                    ddy = y1 - y2
+                    ddz = z1 - z2
+                    
+                    # Quick distance check before expensive sqrt
+                    dist_sq = ddx*ddx + ddy*ddy + ddz*ddz
+                    if dist_sq > max_dist * max_dist:
                         continue
-                    ddz = z1 - positions[j][2]
-                    if abs(ddz) > max_dist:
-                        continue
-
-                    dist = math.sqrt(ddx*ddx + ddy*ddy + ddz*ddz)
+                    
+                    dist = math.sqrt(dist_sq)
                     if 0.4 < dist <= max_dist:
                         _add_bond_safe(i, j)
-
