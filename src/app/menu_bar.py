@@ -17,6 +17,7 @@ def build_menu_bar(window):
     _build_plugins_menu(window, menu_bar)
     _build_view_menu(window, menu_bar)
     _build_applications_menu(window, menu_bar)
+    _build_support_menu(window, menu_bar)
     _build_help_menu(window, menu_bar)
 
 
@@ -355,6 +356,27 @@ def _build_applications_menu(window, menu_bar):
                    [window.color_action, window.protein_color_action,
                     window.aromaticity_action] + window.tools_submenu_actions):
         action.setEnabled(False)
+
+
+# ── Support ───────────────────────────────────────────────────────
+
+def _build_support_menu(window, menu_bar):
+    support_menu = menu_bar.addMenu("&Support")
+
+    coffee_action = QAction("☕ Buy Me a Coffee", window)
+    coffee_action.setStatusTip("Support PyChem development")
+    coffee_action.triggered.connect(lambda: _open_url("https://buymeacoffee.com/vijaymasand"))
+    support_menu.addAction(coffee_action)
+
+
+def _open_url(url):
+    try:
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(url))
+    except Exception:
+        import webbrowser
+        webbrowser.open(url)
 
 
 # ── Help ──────────────────────────────────────────────────────────
