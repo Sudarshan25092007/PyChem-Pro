@@ -79,6 +79,59 @@ def bspline(vec1, vec2, vec3, vec4, n):
     return result
 
 
+def bspline_batch(vec1, vec2, vec3, vec4, n):
+    """
+    Batched uniform cubic B-spline through 4 batched control points.
+    Vectorized version of bspline() for arbitrary leading batch dimensions.
+
+    Args:
+        vec1..vec4: control point batches (np.ndarray shape (N, P, 3))
+        n: number of subdivisions (splineSteps)
+
+    Returns:
+        np.ndarray shape (n+1, N, P, 3) — spline points for each (segment, profile) pair
+    """
+    n1 = float(n)
+    n2 = n1 * n1
+    n3 = n1 * n1 * n1
+
+    S = np.zeros((4, 4))
+    S[0, 0] = 6.0 / n3
+    S[1, 0] = 6.0 / n3;  S[1, 1] = 2.0 / n2
+    S[2, 0] = 1.0 / n3;  S[2, 1] = 1.0 / n2;  S[2, 2] = 1.0 / n1
+    S[3, 3] = 1.0
+
+    oos = 1.0 / 6.0
+    B = np.zeros((4, 4))
+    B[0, 0] = -1*oos;  B[0, 1] =  3*oos;  B[0, 2] = -3*oos;  B[0, 3] = 1*oos
+    B[1, 0] =  3*oos;  B[1, 1] = -6*oos;  B[1, 2] =  3*oos;  B[1, 3] = 0
+    B[2, 0] = -3*oos;  B[2, 1] =  0;      B[2, 2] =  3*oos;  B[2, 3] = 0
+    B[3, 0] =  1*oos;  B[3, 1] =  4*oos;  B[3, 2] =  1*oos;  B[3, 3] = 0
+
+    SB = S @ B  # (4, 4)
+
+    # Stack control points: (4, N, P, 3), flatten batch dims for vectorized matmul
+    G = np.stack([vec1, vec2, vec3, vec4], axis=0)
+    batch_shape = G.shape[1:]          # (N, P, 3)
+    G_flat = G.reshape(4, -1, 3)       # (4, N*P, 3)
+
+    # M[i, j] = sum_k SB[i,k] * G_flat[k, j]  →  (4, N*P, 3)
+    # w is always 1 for position data so the homogeneous divide is a no-op
+    M = np.einsum('ij,jkl->ikl', SB, G_flat)
+
+    n_batch = G_flat.shape[1]
+    result = np.empty((n + 1, n_batch, 3))
+    result[0] = M[3]
+
+    for k in range(n):
+        M[3] += M[2]
+        M[2] += M[1]
+        M[1] += M[0]
+        result[k + 1] = M[3]
+
+    return result.reshape((n + 1,) + batch_shape)
+
+
 def spline_for_planes(pp1, pp2, pp3, pp4, n, u, v):
     """
     Create a B-spline for a specific profile point (u, v) through 4 peptide planes.
