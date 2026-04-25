@@ -65,7 +65,6 @@ def build(onefile: bool = True) -> None:
         cmd.append("--macos-create-app-bundle")
         cmd.append(f"--macos-app-name={APP_NAME}")
         cmd.append(f"--macos-app-version={VERSION}")
-        cmd.append(f"--macos-bundle-name={APP_NAME}")
         if icon_icns.exists():
             cmd.append(f"--macos-app-icon={icon_icns}")
     elif system == "Linux":
