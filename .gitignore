@@ -20,7 +20,7 @@ graphify-out/
 Claude.md
 .claude
 
-dist/
+dist/*
 !dist/*.dmg
 !dist/*.exe
 build/
