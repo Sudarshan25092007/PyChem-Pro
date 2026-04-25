@@ -21,6 +21,8 @@ Claude.md
 .claude
 
 dist/
+!dist/*.dmg
+!dist/*.exe
 build/
 *.build/
 *.dist/
