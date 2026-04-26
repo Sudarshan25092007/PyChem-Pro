@@ -106,18 +106,7 @@ for /f "tokens=*" %%V in ('"%PYTHON%" --version 2^>^&1') do echo   OK  Using %%V
 
 :: ── Step 4: Create shortcut with icon (once) ──────────────────────────────
 if not exist ".launcher_icon_set" (
-    set ICON=%~dp0assets\icon.ico
-    set TARGET=%~f0
-    set LNK=%~dp0PyChem - Launch.lnk
-    powershell -NoProfile -Command "
-        $ws = New-Object -ComObject WScript.Shell
-        $s  = $ws.CreateShortcut('!LNK!')
-        $s.TargetPath      = '!TARGET!'
-        $s.IconLocation    = '!ICON!'
-        $s.WorkingDirectory = '%~dp0'
-        $s.Description     = 'Launch PyChem'
-        $s.Save()
-    " >nul 2>&1
+    powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell;$s=$ws.CreateShortcut('%~dp0PyChem - Launch.lnk');$s.TargetPath='%~f0';$s.IconLocation='%~dp0assets\icon.ico';$s.WorkingDirectory='%~dp0';$s.Description='Launch PyChem';$s.Save()" >nul 2>&1
     echo. > ".launcher_icon_set"
     echo   OK  Shortcut created: PyChem - Launch.lnk  (use this for the icon^)
 )
@@ -127,8 +116,8 @@ if not exist venv (
     echo.
     echo   ^>^>  First run -- installing dependencies, please wait ~2 minutes...
     "%PYTHON%" -m venv venv
-    venv\Scripts\pip install --upgrade pip -q
-    venv\Scripts\pip install -r requirements.txt
+    venv\Scripts\python -m pip install --upgrade pip -q
+    venv\Scripts\python -m pip install -r requirements.txt
     echo   OK  Dependencies installed.
 )
 
