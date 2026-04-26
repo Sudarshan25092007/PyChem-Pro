@@ -4,7 +4,8 @@ testing/
 tests/
 
 Prompts.txt
-*.bat
+PyChem.bat
+
 *.mol2
 *.pdb
 *.pyc
@@ -22,7 +23,7 @@ Claude.md
 
 dist/*
 !dist/*.dmg
-!dist/*.exe
+*.lnk
 build/
 *.build/
 *.dist/
