@@ -9,7 +9,7 @@
 
 **Repository:** https://github.com/vijaymasand/PyChem
 
-[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/vijaymasand)
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://buymeacoffee.com/vijaymasand)
 
 ---
 
