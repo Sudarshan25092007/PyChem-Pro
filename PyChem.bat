@@ -106,7 +106,16 @@ for /f "tokens=*" %%V in ('"%PYTHON%" --version 2^>^&1') do echo   OK  Using %%V
 
 :: ── Step 4: Create shortcut with icon (once) ──────────────────────────────
 if not exist ".launcher_icon_set" (
-    powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell;$s=$ws.CreateShortcut('%~dp0PyChem - Launch.lnk');$s.TargetPath='%~f0';$s.IconLocation='%~dp0assets\icon.ico';$s.WorkingDirectory='%~dp0';$s.Description='Launch PyChem';$s.Save()" >nul 2>&1
+    set "PS1=%TEMP%\pychem_lnk.ps1"
+    echo $ws = New-Object -ComObject WScript.Shell                    > "%TEMP%\pychem_lnk.ps1"
+    echo $s  = $ws.CreateShortcut("%~dp0PyChem - Launch.lnk")       >> "%TEMP%\pychem_lnk.ps1"
+    echo $s.TargetPath      = "%~f0"                                  >> "%TEMP%\pychem_lnk.ps1"
+    echo $s.IconLocation    = "%~dp0assets\icon.ico"                  >> "%TEMP%\pychem_lnk.ps1"
+    echo $s.WorkingDirectory = "%~dp0"                                >> "%TEMP%\pychem_lnk.ps1"
+    echo $s.Description     = "Launch PyChem"                         >> "%TEMP%\pychem_lnk.ps1"
+    echo $s.Save()                                                     >> "%TEMP%\pychem_lnk.ps1"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\pychem_lnk.ps1" >nul 2>&1
+    del "%TEMP%\pychem_lnk.ps1" >nul 2>&1
     echo. > ".launcher_icon_set"
     echo   OK  Shortcut created: PyChem - Launch.lnk  (use this for the icon^)
 )
