@@ -4,7 +4,6 @@ testing/
 tests/
 
 Prompts.txt
-PyChem.bat
 
 *.mol2
 *.pdb

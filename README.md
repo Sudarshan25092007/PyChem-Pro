@@ -20,7 +20,7 @@
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
 - [Running the Application](#running-the-application)
-  - [Recommended: One-Click Launcher (macOS)](#recommended-one-click-launcher-macos)
+  - [Recommended: One-Click Launchers](#recommended-one-click-launchers)
   - [Manual Setup (all platforms)](#manual-setup-all-platforms)
 - [Quick Start — Python API](#quick-start--python-api)
 - [Project Structure](#project-structure)
@@ -223,24 +223,29 @@ Without these, the core application runs fine; the affected plugins are simply s
 
 ## Running the Application
 
-### Recommended: One-Click Launcher (macOS)
+### Recommended: One-Click Launchers
 
-The easiest way to run PyChem on macOS is to **double-click `PyChem.command`** in Finder. No terminal, no Python knowledge, no setup steps required.
+The easiest way to run PyChem is to double-click the launcher for your platform. No terminal, no Python knowledge, no setup steps required.
 
-**What the launcher does internally (transparent step-by-step):**
+| Platform | File to double-click |
+|----------|----------------------|
+| macOS | `PyChem.command` (in Finder) |
+| Windows | `PyChem.bat`, then use the `PyChem - Launch.lnk` shortcut created on first run |
+
+Both launchers handle everything automatically and follow the same steps:
 
 | Step | What happens |
 |------|-------------|
-| 1 | Checks whether Python 3.10+ is already installed on your Mac |
-| 2 | If Python is missing — checks for Homebrew; installs Homebrew if needed (asks for your Mac password once), then installs Python 3.12 automatically |
-| 3 | Sets the PyChem icon on the launcher file itself (cosmetic, first run only) |
+| 1 | Checks whether Python 3.10+ is already installed |
+| 2 | **If Python is missing** — installs it automatically: macOS uses Homebrew (asks for your password once); Windows uses `winget` (built into Windows 10/11), falling back to a silent download from python.org |
+| 3 | Creates a PyChem icon shortcut for easy access (first run only) |
 | 4 | Creates an isolated Python virtual environment inside the project folder (`venv/`) so no system packages are touched (first run only) |
-| 5 | Installs all required Python packages from `requirements.txt` into that venv (first run only) |
+| 5 | Installs all required packages from `requirements.txt` into that venv (first run only) |
 | 6 | Launches PyChem |
 
-> **First run** takes 2–5 minutes while Python packages download and install. Every run after that starts in seconds — the venv is reused as-is.
+> **First run** takes 2–5 minutes while packages download and install. Every run after that starts in seconds — the venv is reused as-is.
 
-> This launcher is provided for your convenience. It is the recommended way to get started. If you prefer to manage your Python environment yourself, or if the launcher does not work on your machine, use the manual setup below — it is straightforward and gives you full control.
+> The launchers are provided for your convenience and are the recommended way to get started. If you prefer to manage your Python environment yourself, or if a launcher does not work on your machine, use the manual setup below — it is straightforward and gives you full control.
 
 ---
 
