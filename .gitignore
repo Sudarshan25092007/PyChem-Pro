@@ -4,6 +4,7 @@ testing/
 tests/
 
 Prompts.txt
+linkedin_article.txt
 run_app.bat
 
 *.mol2
