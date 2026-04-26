@@ -4,6 +4,7 @@ testing/
 tests/
 
 Prompts.txt
+run_app.bat
 
 *.mol2
 *.pdb
