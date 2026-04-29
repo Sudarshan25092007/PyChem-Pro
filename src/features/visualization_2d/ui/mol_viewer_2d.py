@@ -155,16 +155,28 @@ class MolViewer2D(QWidget):
                 print(f"[DEBUG] Using explicitly provided 2D coordinates: {len(coords_2d)}")
             self.coords_2d = coords_2d
         elif molecule and molecule.atoms:
-            # Check if coordinates already exist on atoms (e.g. from parser)
-            has_coords = all(hasattr(a, 'x2d') and a.x2d is not None for a in molecule.atoms if a.symbol != 'H')
+            # Check if coordinates already exist on atoms (e.g. from parser x2d/y2d or sketcher x/y)
+            has_x2d = all(hasattr(a, 'x2d') and a.x2d is not None for a in molecule.atoms if a.symbol != 'H')
+            has_xy = all(hasattr(a, 'x') and a.x is not None for a in molecule.atoms if a.symbol != 'H')
 
-            # Use SMILES-based OASA coordinate generation for ALL molecules
-            # This implements the flow: mol -> SMILES -> oasa -> 2D coordinates
-            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
-            if _DEBUG:
-                print("[DEBUG] Using SMILES-based OASA Layout Engine (mol -> SMILES -> oasa -> 2D)...")
-            generator = CoordinateGenerator2DSMILES(molecule, force_regenerate=(not has_coords))
-            self.coords_2d = generator.generate()
+            if has_xy and not has_x2d:
+                # Use manual coordinates from sketcher
+                if _DEBUG: print("[DEBUG] Using manual coordinates (x, y) from sketcher.")
+                self.coords_2d = {a.index: [a.x, -a.y] for a in molecule.atoms} # Y is inverted in sketcher vs layout engine? 
+                # Actually, check if sketcher Y is same as layout Y.
+                # In sketcher: Y increases downwards. In layout engine: Y increases upwards.
+                # MolViewer2D._to_screen: sy = -my * self._scale + self._offset_y
+                # If we use sketcher Y directly, -my will make it go upwards.
+                # Sketcher Y is already downwards. So sy = my * scale + offset? 
+                # Let's just use a.x and a.y and adjust if needed.
+            
+            if not self.coords_2d:
+                # Use SMILES-based OASA coordinate generation for ALL molecules
+                from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+                if _DEBUG:
+                    print("[DEBUG] Using SMILES-based OASA Layout Engine (mol -> SMILES -> oasa -> 2D)...")
+                generator = CoordinateGenerator2DSMILES(molecule, force_regenerate=(not has_x2d))
+                self.coords_2d = generator.generate()
 
             # Ensure ring perception is up-to-date for correct double bond placement
             molecule.find_rings()
