@@ -38,17 +38,17 @@ class Arrow(DrawableObject):
         line = self.p1 + self.p2
         self._items.append(self.paper.addLine(line, color=self.color, width=2))
         
-        # Arrow head (Solid triangle)
+        # Arrow head (Open style - two lines)
         angle = atan2(self.p2[1] - self.p1[1], self.p2[0] - self.p1[0])
-        head_len = 12
-        head_angle = pi / 8 
+        head_len = 10
+        head_angle = pi / 6 
         h1 = (self.p2[0] - head_len * cos(angle - head_angle),
               self.p2[1] - head_len * sin(angle - head_angle))
         h2 = (self.p2[0] - head_len * cos(angle + head_angle),
               self.p2[1] - head_len * sin(angle + head_angle))
         
-        head_poly = [self.p2, h1, h2]
-        self._items.append(self.paper.addPolygon(head_poly, color=self.color, fill=self.color))
+        self._items.append(self.paper.addLine(self.p2 + h1, color=self.color, width=2))
+        self._items.append(self.paper.addLine(self.p2 + h2, color=self.color, width=2))
 
     def _draw_curly_arrow(self, head_type="full"):
         # Quadratic Bezier curve

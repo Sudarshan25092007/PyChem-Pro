@@ -34,18 +34,10 @@ class TextLabel(DrawableObject):
         
         font = Font(self.font_name, self.font_size)
         
-        if not self.text:
-            # Show a placeholder rectangle when text is empty
-            box_width = 80
-            box_height = 20
-            rect = [self.x - box_width/2, self.y - box_height/2, 
-                    self.x + box_width/2, self.y + box_height/2]
-            self._text_item = self.paper.addRect(rect, color=(100, 100, 100), width=1, fill=(240, 240, 240))
-        else:
-            self._text_item = self.paper.addHtmlText(self.text, (self.x, self.y), font=font, 
-                                                     align=Align.HCenter | Align.VCenter, color=self.color)
-            if hasattr(self._text_item, 'setFlag'):
-                self._text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
+        self._text_item = self.paper.addHtmlText(self.text, (self.x, self.y), font=font, 
+                                                 align=Align.HCenter | Align.VCenter, color=self.color)
+        if hasattr(self._text_item, 'setFlag'):
+            self._text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
             
         self.paper.addFocusable(self._text_item, self)
 
@@ -99,6 +91,8 @@ class TextLabel(DrawableObject):
                 if new_text != self.text:
                     self.text = new_text
                     self.draw()
+                if self.paper:
+                    self.paper.text_editing_finished.emit()
             if self._focus_item:
                 try:
                     self.paper.removeItem(self._focus_item)

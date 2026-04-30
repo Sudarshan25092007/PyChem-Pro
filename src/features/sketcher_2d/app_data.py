@@ -8,6 +8,7 @@ class App:
     window = None
     paper = None # selected current paper
     tool = None # selected current tool
+    clipboard = [] # List of cloned objects
     template_manager = None # created only once
     SRC_DIR = os.path.dirname(__file__)
     # We use a custom data dir for PyChem sketcher

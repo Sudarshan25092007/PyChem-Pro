@@ -196,3 +196,19 @@ class Molecule(OasaMolecule, DrawableObject):
         for b in self.bonds:
             if self.paper:
                 b.draw()
+
+    def clone(self):
+        new_mol = Molecule()
+        atom_map = {}
+        for atom in self.atoms:
+            new_atom = atom.copy()
+            new_atom.molecule = new_mol
+            new_mol.add_atom(new_atom)
+            atom_map[atom] = new_atom
+        for bond in self.bonds:
+            new_bond = Bond()
+            new_bond.set_type(bond.type)
+            new_bond.connect_atoms(atom_map[bond.atoms[0]], atom_map[bond.atoms[1]])
+            new_mol.add_bond(new_bond)
+        return new_mol
+

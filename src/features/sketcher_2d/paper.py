@@ -8,9 +8,11 @@ from .undo_manager import UndoManager
 
 from src.shared.qt_compat import (QGraphicsScene, QGraphicsItem, QGraphicsTextItem,
     QRectF, QPointF, Qt, QColor, QPen, QBrush, QPolygonF, QPainterPath,
-    QFontMetricsF, QFont, QTransform)
+    QFontMetricsF, QFont, QTransform, Signal)
 
 class Paper(QGraphicsScene):
+    text_editing_finished = Signal()
+
     def __init__(self, view=None):
         QGraphicsScene.__init__(self, view)
         self.view = view
@@ -100,7 +102,9 @@ class Paper(QGraphicsScene):
         item.setDefaultTextColor(QColor(*color))
         if font:
             qf = QFont(font.name)
-            qf.setPixelSize(int(round(font.size)))
+            sz = int(round(font.size))
+            if sz > 0:
+                qf.setPixelSize(sz)
             item.setFont(qf)
         item.setHtml(text)
         self.addItem(item)
@@ -121,7 +125,9 @@ class Paper(QGraphicsScene):
         item.setDefaultTextColor(QColor(*color))
         if font:
             qf = QFont(font.name)
-            qf.setPixelSize(int(round(font.size)))
+            sz = int(round(font.size))
+            if sz > 0:
+                qf.setPixelSize(sz)
             item.setFont(qf)
         item.setHtml(text)
         self.addItem(item)
@@ -164,7 +170,9 @@ class Paper(QGraphicsScene):
 
     def getCharWidth(self, char, font):
         qf = QFont(font.name)
-        qf.setPixelSize(int(round(font.size)))
+        sz = int(round(font.size))
+        if sz > 0:
+            qf.setPixelSize(sz)
         return QFontMetricsF(qf).horizontalAdvance(char)
 
     def addFocusable(self, graphics_item, obj):

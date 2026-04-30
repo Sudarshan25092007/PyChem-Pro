@@ -235,6 +235,14 @@ class SketcherWidget(QWidget):
         App.tool = self.current_tool
 
         self.tool_group.triggered.connect(self._on_tool_changed)
+        self.paper.text_editing_finished.connect(self._on_text_editing_finished)
+
+    def _on_text_editing_finished(self):
+        # ChemDraw style: after text is finished, switch back to select tool
+        from ..tools import TextTool
+        if isinstance(self.current_tool, TextTool):
+            self.action_select.setChecked(True)
+            self._on_tool_changed(self.action_select)
 
     def wheelEvent(self, event):
         angle = event.angleDelta().y()

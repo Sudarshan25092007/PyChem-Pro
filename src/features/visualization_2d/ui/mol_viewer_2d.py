@@ -149,6 +149,7 @@ class MolViewer2D(QWidget):
         """
         self.molecule = molecule
         self.selected_atoms = set()
+        self.coords_2d = {}
 
         if coords_2d:
             if _DEBUG:

@@ -162,6 +162,12 @@ class Atom(OasaAtom, DrawableObject):
             self._draw_marks()
         if self._focusable_item:
             self.paper.addFocusable(self._focusable_item, self)
+        
+        # Redraw connected bonds to ensure they use correct trim distance (padding)
+        # especially if this atom just changed visibility (e.g. C -> N)
+        if self.molecule:
+            for bond in self.neighbor_edges:
+                bond.draw()
 
     def _draw_invisible_atom(self):
         r = Settings.bond_length / 4

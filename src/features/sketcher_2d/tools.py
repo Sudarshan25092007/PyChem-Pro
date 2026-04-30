@@ -447,7 +447,7 @@ class TextTool(Tool):
             App.paper.changeFocusTo(focused)
         else:
             # Create new text with empty string
-            text = TextLabel(x, y, "Text")
+            text = TextLabel(x, y, "")
             App.paper.addObject(text)
             text.draw()
             self.current_text = text
