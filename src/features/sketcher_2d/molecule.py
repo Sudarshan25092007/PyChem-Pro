@@ -73,6 +73,13 @@ class Molecule(OasaMolecule, DrawableObject):
         if hasattr(self, "_flush_cache"):
             self._flush_cache()
 
+    def delete_from_paper(self):
+        for atom in self.atoms:
+            atom.delete_from_paper()
+        for bond in list(self.bonds):
+            bond.delete_from_paper()
+        super().delete_from_paper()
+
     def eat_molecule(self, food_mol):
         if food_mol is self: return
         for atom in food_mol.atoms[:]:

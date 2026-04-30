@@ -45,33 +45,35 @@ class SketcherWidget(QWidget):
 
         # Basic Tools
         self.action_bond = QAction("Bond", self)
-        self.action_bond.setToolTip("Draw Bonds (B)")
-        self.action_bond.setShortcut(QKeySequence("B"))
+        self.action_bond.setToolTip("Draw Bonds")
         self.action_bond.setCheckable(True)
         self.tool_group.addAction(self.action_bond)
         self.toolbar.addAction(self.action_bond)
 
         self.action_eraser = QAction("Eraser", self)
-        self.action_eraser.setToolTip("Remove Atoms or Bonds (E)")
-        self.action_eraser.setShortcut(QKeySequence("E"))
+        self.action_eraser.setToolTip("Remove Atoms or Bonds")
         self.action_eraser.setCheckable(True)
         self.tool_group.addAction(self.action_eraser)
         self.toolbar.addAction(self.action_eraser)
 
         self.action_text = QAction("Text", self)
-        self.action_text.setToolTip("Add Text (T)")
-        self.action_text.setShortcut(QKeySequence("T"))
+        self.action_text.setToolTip("Add Text")
         self.action_text.setCheckable(True)
         self.tool_group.addAction(self.action_text)
         self.toolbar.addAction(self.action_text)
 
         self.action_select = QAction("Select", self)
-        self.action_select.setToolTip("Select & Move (S)")
-        self.action_select.setShortcut(QKeySequence("S"))
+        self.action_select.setToolTip("Select & Move")
         self.action_select.setCheckable(True)
         self.action_select.setChecked(True)
         self.tool_group.addAction(self.action_select)
         self.toolbar.addAction(self.action_select)
+
+        self.action_rotate = QAction("Rotate", self)
+        self.action_rotate.setToolTip("Rotate Molecule")
+        self.action_rotate.setCheckable(True)
+        self.tool_group.addAction(self.action_rotate)
+        self.toolbar.addAction(self.action_rotate)
 
         self.toolbar.addSeparator()
 
@@ -208,12 +210,13 @@ class SketcherWidget(QWidget):
         self.paper.setSize(2000, 2000)
         self.view.centerOn(0, 0)
         
-        from ..tools import TemplateTool, ArrowTool, SelectTool, TextTool
+        from ..tools import TemplateTool, ArrowTool, SelectTool, TextTool, RotateTool
         self.tools = {
             "bond": StructureTool(),
             "eraser": EraserTool(),
             "text": TextTool(),
             "select": SelectTool(),
+            "rotate": RotateTool(),
             "benzene": TemplateTool("benzene"),
             "cyclohexane": TemplateTool("cyclohexane"),
             "cyclopentane": TemplateTool("cyclopentane"),
@@ -286,6 +289,8 @@ class SketcherWidget(QWidget):
             self.current_tool = self.tools["text"]
         elif action == self.action_select:
             self.current_tool = self.tools["select"]
+        elif action == self.action_rotate:
+            self.current_tool = self.tools["rotate"]
         elif action == self.action_benzene:
             self.current_tool = self.tools["benzene"]
         elif action == self.action_cyclohexane:

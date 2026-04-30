@@ -147,6 +147,7 @@ class StructureTool(Tool):
                 focused.set_symbol(symbol)
                 focused.draw()
                 App.paper.save_state_to_undo_stack()
+                App.paper.locked_focus_obj = None
                 return True
         return False
 
@@ -196,13 +197,28 @@ class RotateTool(Tool):
     def on_mouse_press(self, x, y):
         self.mouse_press_pos = (x, y)
         focused = App.paper.focused_obj
+        
         if focused:
-            if hasattr(focused, 'molecule'):
+            if hasattr(focused, 'molecule') and focused.molecule:
                 self.molecule = focused.molecule
             else:
                 self.molecule = focused
-            if self.molecule:
-                self.center = self.molecule.get_center()
+        
+        if not self.molecule:
+            molecules = [obj for obj in App.paper.objects if hasattr(obj, 'atoms')]
+            if len(molecules) == 1:
+                self.molecule = molecules[0]
+            elif len(molecules) > 1:
+                min_dist = float('inf')
+                for m in molecules:
+                    cx, cy = m.get_center()
+                    dist = (x - cx)**2 + (y - cy)**2
+                    if dist < min_dist:
+                        min_dist = dist
+                        self.molecule = m
+                        
+        if self.molecule:
+            self.center = self.molecule.get_center()
 
     def on_mouse_move(self, x, y):
         if not App.paper.dragging or not self.molecule: return
@@ -290,8 +306,8 @@ class TemplateTool(Tool):
         final_bond = mol.new_bond()
         final_bond.connect_atoms(curr_atom, a2)
         
-        # If it's benzene, we need to fix double bond pattern and side
-        if self.template_name == "benzene":
+        # If it's benzene or pyridine, we need to fix double bond pattern and side
+        if self.template_name in ("benzene", "pyridine"):
             # Naphthalene-like pattern: shared bond can be double or single.
             # Let's make the new ring alternate starting from a2-curr_atom as double.
             # And set second_line_side to point inwards.
@@ -366,21 +382,25 @@ class TemplateTool(Tool):
 
     def _generate_ring(self, mol, x, y, radius, start_angle):
         from math import cos, sin, pi
-        n = {"benzene": 6, "cyclohexane": 6, "cyclopentane": 5}[self.template_name]
+        n = {"benzene": 6, "cyclohexane": 6, "cyclopentane": 5, "pyridine": 6, "furan": 5, "pyrrole": 5}.get(self.template_name, 6)
         points = []
         for i in range(n):
             angle = start_angle + i * (2 * pi / n)
             points.append((x + radius * cos(angle), y + radius * sin(angle)))
         
         atoms = []
-        for p in points:
-            a = mol.new_atom("C")
+        for i, p in enumerate(points):
+            symbol = "C"
+            if self.template_name == "pyridine" and i == 0: symbol = "N"
+            elif self.template_name == "furan" and i == 0: symbol = "O"
+            elif self.template_name == "pyrrole" and i == 0: symbol = "N"
+            a = mol.new_atom(symbol)
             a.set_pos(*p)
             atoms.append(a)
         
         for i in range(n):
             b = mol.new_bond()
-            is_double = (self.template_name == "benzene" and i % 2 == 0)
+            is_double = (self.template_name in ("benzene", "pyridine") and i % 2 == 0)
             b.set_type("double" if is_double else "single")
             b.connect_atoms(atoms[i], atoms[(i+1)%n])
         
@@ -424,28 +444,17 @@ class TextTool(Tool):
         focused = App.paper.focused_obj
         if isinstance(focused, TextLabel):
             self.current_text = focused
+            App.paper.changeFocusTo(focused)
         else:
             # Create new text with empty string
-            text = TextLabel(x, y, "")
+            text = TextLabel(x, y, "Text")
             App.paper.addObject(text)
             text.draw()
             self.current_text = text
+            App.paper.changeFocusTo(text)
         App.paper.save_state_to_undo_stack()
 
     def on_key_press(self, key, text):
-        if self.current_text:
-            if key == 16777219:  # Backspace
-                if self.current_text.text:
-                    self.current_text.text = self.current_text.text[:-1]
-                    self.current_text.draw()
-                    App.paper.save_state_to_undo_stack()
-            elif key == 16777220:  # Enter
-                self.current_text = None
-            elif text and text.isprintable():
-                self.current_text.text += text
-                self.current_text.draw()
-                App.paper.save_state_to_undo_stack()
-            return True
         return False
 
 class SelectTool(Tool):
@@ -645,6 +654,7 @@ class SelectTool(Tool):
                 focused.set_symbol(symbol)
                 focused.draw()
                 App.paper.save_state_to_undo_stack()
+                App.paper.locked_focus_obj = None
                 return True
         elif isinstance(focused, Arrow):
             if text in ('+', '='):
@@ -658,14 +668,5 @@ class SelectTool(Tool):
                 App.paper.save_state_to_undo_stack()
                 return True
         elif isinstance(focused, TextLabel):
-            if key == 16777219:  # Backspace
-                if focused.text:
-                    focused.text = focused.text[:-1]
-                    focused.draw()
-                    App.paper.save_state_to_undo_stack()
-            elif text and text.isprintable():
-                focused.text += text
-                focused.draw()
-                App.paper.save_state_to_undo_stack()
-            return True
+            return False
         return False

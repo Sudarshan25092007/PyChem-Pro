@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from .drawing_parents import DrawableObject, Color, Font, Align
-from src.shared.qt_compat import QGraphicsTextItem, QFont, QColor
+from src.shared.qt_compat import QGraphicsTextItem, QFont, QColor, QGraphicsItem
 
 global text_id_no
 text_id_no = 1
@@ -42,15 +42,11 @@ class TextLabel(DrawableObject):
                     self.x + box_width/2, self.y + box_height/2]
             self._text_item = self.paper.addRect(rect, color=(100, 100, 100), width=1, fill=(240, 240, 240))
         else:
-            # Show text with a background box for visibility
             self._text_item = self.paper.addHtmlText(self.text, (self.x, self.y), font=font, 
                                                      align=Align.HCenter | Align.VCenter, color=self.color)
-            # Add a light background rectangle behind text
-            bbox = self.paper.itemBoundingBox(self._text_item)
-            bg_rect = [bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2]
-            self._bg_item = self.paper.addRect(bg_rect, color=(200, 200, 200), width=1, fill=(255, 255, 255))
-            self._bg_item.setZValue(-1)
-        
+            if hasattr(self._text_item, 'setFlag'):
+                self._text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
+            
         self.paper.addFocusable(self._text_item, self)
 
     def clear_drawings(self):
@@ -83,12 +79,26 @@ class TextLabel(DrawableObject):
 
     def set_focus(self, focus):
         if not self.paper: return
+        
+        # Import Qt here to use for flags
+        from src.shared.qt_compat import Qt
+        
         if focus:
+            if hasattr(self._text_item, 'setTextInteractionFlags'):
+                self._text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+                self._text_item.setFocus()
             bbox = self.bounding_box()
             from .app_data import Settings
             self._focus_item = self.paper.addRect(bbox, color=(200, 200, 255), width=1)
             self.paper.toSelectionLayer(self._focus_item)
         else:
+            if hasattr(self._text_item, 'setTextInteractionFlags'):
+                self._text_item.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+                self._text_item.clearFocus()
+                new_text = self._text_item.toPlainText()
+                if new_text != self.text:
+                    self.text = new_text
+                    self.draw()
             if self._focus_item:
                 try:
                     self.paper.removeItem(self._focus_item)
@@ -128,7 +138,3 @@ class TextLabel(DrawableObject):
         # Text doesn't rotate in this implementation
         pass
 
-    def delete_from_paper(self):
-        if self.paper:
-            self.paper.removeObject(self)
-        self.clear_drawings()

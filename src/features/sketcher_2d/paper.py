@@ -25,6 +25,7 @@ class Paper(QGraphicsScene):
         self.focusable_items = set()
         self.do_not_focus = set()
         self.focused_obj = None
+        self.locked_focus_obj = None
         self.selected_objs = []
         item = self.addText("")
         self.textitem_margin = item.boundingRect().width() / 2
@@ -50,8 +51,17 @@ class Paper(QGraphicsScene):
 
     def objectsInRect(self, rect):
         x1, y1, x2, y2 = rect
-        gfx_items = set(self.items(QRectF(x1, y1, x2 - x1, y2 - y1)))
-        return [itm.object for itm in gfx_items & self.focusable_items]
+        gfx_items = self.items(QRectF(x1, y1, x2 - x1, y2 - y1))
+        # self.items() returns items in Z-order descending (topmost first)
+        result = []
+        seen = set()
+        for itm in gfx_items:
+            if itm in self.focusable_items:
+                obj = itm.object
+                if obj not in seen:
+                    result.append(obj)
+                    seen.add(obj)
+        return result
 
     def redraw_dirty_objects(self):
         draw_objs_recursively(self.dirty_objects)
@@ -192,22 +202,25 @@ class Paper(QGraphicsScene):
         self.selected_objs = []
 
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.RightButton:
-            x, y = ev.scenePos().x(), ev.scenePos().y()
+        if ev.button() not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton): return
+        self.mouse_pressed = True
+        self.mouse_button = ev.button()
+        self.dragging = False
+        self._mouse_press_pos = (ev.scenePos().x(), ev.scenePos().y())
+        x, y = self._mouse_press_pos
+        
+        if ev.button() == Qt.MouseButton.RightButton:
             if App.tool and hasattr(App.tool, 'on_right_click'):
                 App.tool.on_right_click(x, y)
             return
-        
-        if ev.button() != Qt.LeftButton: return
-        self.mouse_pressed = True
-        self.dragging = False
-        self._mouse_press_pos = (ev.scenePos().x(), ev.scenePos().y())
-        
-        # Refresh focus if it's currently None (e.g. after undo)
-        if self.focused_obj is None:
-            x, y = self._mouse_press_pos
-            objs = self.objectsInRect([x - 5, y - 5, x + 5, y + 5])
-            if objs: self.changeFocusTo(objs[0])
+
+        objs = self.objectsInRect([x - 5, y - 5, x + 5, y + 5])
+        if objs:
+            self.locked_focus_obj = objs[0]
+            self.changeFocusTo(objs[0])
+        else:
+            self.locked_focus_obj = None
+            self.changeFocusTo(None)
 
         if App.tool: App.tool.on_mouse_press(*self._mouse_press_pos)
         QGraphicsScene.mousePressEvent(self, ev)
@@ -218,23 +231,23 @@ class Paper(QGraphicsScene):
             self.dragging = True
         # Only change focus when not pressing mouse (to preserve focus during typing)
         if not self.mouse_pressed:
-            objs = self.objectsInRect([x - 5, y - 5, x + 5, y + 5])
-            focused_obj = objs[0] if objs else None
-            self.changeFocusTo(focused_obj)
+            if not self.locked_focus_obj:
+                objs = self.objectsInRect([x - 5, y - 5, x + 5, y + 5])
+                focused_obj = objs[0] if objs else None
+                self.changeFocusTo(focused_obj)
         if App.tool: App.tool.on_mouse_move(x, y)
         QGraphicsScene.mouseMoveEvent(self, ev)
 
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.RightButton:
-            x, y = ev.scenePos().x(), ev.scenePos().y()
-            if App.tool and hasattr(App.tool, 'on_mouse_release'):
-                App.tool.on_mouse_release(x, y)
-            return
-        
-        if self.mouse_pressed:
-            self.mouse_pressed = False
-            if App.tool: App.tool.on_mouse_release(ev.scenePos().x(), ev.scenePos().y())
-            self.dragging = False
+        if not self.mouse_pressed or getattr(self, 'mouse_button', None) != ev.button():
+            return QGraphicsScene.mouseReleaseEvent(self, ev)
+            
+        self.mouse_pressed = False
+        if App.tool and hasattr(App.tool, 'on_mouse_release'): 
+            App.tool.on_mouse_release(ev.scenePos().x(), ev.scenePos().y())
+        if self.dragging:
+            self.locked_focus_obj = None
+        self.dragging = False
         QGraphicsScene.mouseReleaseEvent(self, ev)
 
     def save_state_to_undo_stack(self, name=''):

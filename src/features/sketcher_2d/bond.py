@@ -148,9 +148,9 @@ class Bond(OasaBond, DrawableObject):
         if geo.rect_intersects_rect(bbox1, bbox2): return None
         x1, y1, x2, y2 = line
         if self.atoms[0].visible:
-            x1, y1 = geo.circle_get_point(self.atoms[0].pos, 12, self.atoms[1].pos)
+            x1, y1 = geo.circle_get_point(self.atoms[0].pos, 9, self.atoms[1].pos)
         if self.atoms[1].visible:
-            x2, y2 = geo.circle_get_point(self.atoms[1].pos, 12, self.atoms[0].pos)
+            x2, y2 = geo.circle_get_point(self.atoms[1].pos, 9, self.atoms[0].pos)
         return [x1, y1, x2, y2]
 
     def _draw_single(self):

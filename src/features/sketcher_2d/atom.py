@@ -18,7 +18,7 @@ class Atom(OasaAtom, DrawableObject):
     focus_priority = 5
     redraw_priority = 2
     is_toplevel = False
-    meta__undo_properties = ("symbol", "x", "y", "z", "charge", "isotope", "explicit_hydrogens", "show_symbol", "auto_hydrogens")
+    meta__undo_properties = ("symbol", "x", "y", "z", "charge", "isotope", "explicit_hydrogens", "show_symbol", "auto_hydrogens", "molecule")
     meta__undo_copy = ("properties_",)
     meta__undo_children_to_record = []
     meta__scalables = ("x", "y", "z")
@@ -76,6 +76,13 @@ class Atom(OasaAtom, DrawableObject):
     @property
     def free_valency(self):
         return self.valency - self.occupied_valency
+
+    @property
+    def occupied_valency(self):
+        val = 0
+        for bond in self.neighbor_edges:
+            val += bond.order
+        return int(val)
 
     @property
     def pos(self):
@@ -178,7 +185,7 @@ class Atom(OasaAtom, DrawableObject):
         
         # Add a circular white halo behind the text to hide bond ends
         # Use smaller radius for heteroatoms (N, O, S, P, etc.)
-        halo_r = 8 if self.symbol != 'C' else 11
+        halo_r = 3 if self.symbol != 'C' else 11
         halo_rect = [self.x - halo_r, self.y - halo_r, self.x + halo_r, self.y + halo_r]
         halo = self.paper.addEllipse(halo_rect, color=Color.transparent, fill=Color.white)
         halo.setZValue(-1)
