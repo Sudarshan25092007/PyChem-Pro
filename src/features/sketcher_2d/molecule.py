@@ -212,3 +212,9 @@ class Molecule(OasaMolecule, DrawableObject):
             new_mol.add_bond(new_bond)
         return new_mol
 
+    def draw(self):
+        for atom in self.atoms:
+            atom.draw()
+        for bond in self.bonds:
+            bond.draw()
+

@@ -184,7 +184,33 @@ class SketcherWidget(QWidget):
         self.action_redo.setShortcut(QKeySequence.Redo)
         self.action_redo.triggered.connect(self._on_redo)
         self.right_toolbar.addAction(self.action_redo)
+
+        self.right_toolbar.addSeparator()
+
+        # Copy/Paste (Right Toolbar)
+        self.action_copy = QAction("Copy", self)
+        self.action_copy.setShortcut(QKeySequence.Copy)
+        self.action_copy.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.action_copy.triggered.connect(self._on_copy)
+        self.right_toolbar.addAction(self.action_copy)
+        self.addAction(self.action_copy)
+
+        self.action_paste = QAction("Paste", self)
+        self.action_paste.setShortcut(QKeySequence.Paste)
+        self.action_paste.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.action_paste.triggered.connect(self._on_paste)
+        self.right_toolbar.addAction(self.action_paste)
+        self.addAction(self.action_paste)
+
+        self.right_toolbar.addSeparator()
         
+        self.action_smiles = QAction("SMILES", self)
+        self.action_smiles.setToolTip("SMILES to 2D")
+        self.action_smiles.triggered.connect(self._on_smiles_to_2d)
+        self.right_toolbar.addAction(self.action_smiles)
+
+        self.right_toolbar.addSeparator()
+
         self.action_clear = QAction("Clear", self)
         self.action_clear.triggered.connect(self._on_clear)
         self.right_toolbar.addAction(self.action_clear)
@@ -356,3 +382,120 @@ class SketcherWidget(QWidget):
 
     def _on_redo(self):
         self.paper.redo()
+
+    def _on_copy(self):
+        from ..tools import SelectTool
+        if isinstance(self.current_tool, SelectTool):
+            App.clipboard = []
+            for obj in self.current_tool.objs:
+                if hasattr(obj, 'clone'):
+                    App.clipboard.append(obj.clone())
+            print(f"Copied {len(App.clipboard)} objects to clipboard")
+
+    def _on_paste(self):
+        if not App.clipboard:
+            return
+        
+        new_objs = []
+        offset = 20
+        for obj in App.clipboard:
+            new_obj = obj.clone()
+            if hasattr(new_obj, 'move_by'):
+                new_obj.move_by(offset, offset)
+            elif hasattr(new_obj, 'atoms'):
+                # Molecule
+                for a in new_obj.atoms:
+                    a.move_by(offset, offset)
+            
+            self.paper.addObject(new_obj)
+            new_obj.draw()
+            new_objs.append(new_obj)
+        
+        # Select the newly pasted objects
+        from ..tools import SelectTool
+        if isinstance(self.current_tool, SelectTool):
+            self.current_tool.objs = new_objs
+            for o in self.paper.objects:
+                if hasattr(o, 'set_selected'):
+                    o.set_selected(o in new_objs)
+        
+        self.paper.save_state_to_undo_stack("Paste")
+        
+        # Shift clipboard for consecutive pastes
+        for obj in App.clipboard:
+            if hasattr(obj, 'move_by'):
+                obj.move_by(offset, offset)
+            elif hasattr(obj, 'atoms'):
+                for a in obj.atoms:
+                    a.move_by(offset, offset)
+
+    def _on_smiles_to_2d(self):
+        text, ok = QInputDialog.getText(self, "SMILES to 2D", "Enter SMILES string:")
+        if not ok or not text.strip():
+            return
+            
+        try:
+            from src.features.smiles_parser.services.parser import parse_smiles
+            from src.features.smiles_parser.rules.aromaticity import kekulize
+            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
+            from ..molecule import Molecule
+            from ..atom import Atom
+            from ..bond import Bond
+            from src.core.domain.models.bond import BondType
+            
+            mol_domain = parse_smiles(text.strip())
+            # Force kekulization to show double bonds in rings
+            kekulize(mol_domain)
+            
+            gen = CoordinateGenerator2DSMILES(mol_domain)
+            coords = gen.generate()
+            
+            # Place at center of view
+            view_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+            cx, cy = view_rect.center().x(), view_rect.center().y()
+            
+            new_mol = Molecule()
+            self.paper.addObject(new_mol)
+            
+            atom_map = {}
+            scale = 40 # Increased scale for better visibility
+            
+            for atom in mol_domain.atoms:
+                new_atom = Atom(atom.symbol)
+                new_atom.charge = atom.formal_charge
+                if atom.index in coords:
+                    new_atom.x = cx + coords[atom.index][0] * scale
+                    new_atom.y = cy + coords[atom.index][1] * scale
+                else:
+                    new_atom.x, new_atom.y = cx, cy
+                new_mol.add_atom(new_atom)
+                atom_map[atom.index] = new_atom
+            
+            for bond in mol_domain.bonds:
+                new_bond = Bond()
+                btype = "single"
+                if bond.bond_type == BondType.DOUBLE: btype = "double"
+                elif bond.bond_type == BondType.TRIPLE: btype = "triple"
+                elif bond.bond_type == BondType.AROMATIC: 
+                    # For aromatic, we let oasa or simple alternating logic handle it later, 
+                    # but for now just use alternating pattern or single.
+                    # Actually OASA kekulizes aromatic bonds during text_to_mol.
+                    # Since we use parse_smiles, we should check if it's already kekulized.
+                    btype = "single" 
+                
+                new_bond.set_type(btype)
+                new_bond.connect_atoms(atom_map[bond.begin_atom_idx], atom_map[bond.end_atom_idx])
+                new_mol.add_bond(new_bond)
+            
+            # Handle aromatic bonds specifically if any
+            # For simplicity, if we have aromatic bonds, we can try to kekulize them
+            # but sketcher Bond class prefers "single"/"double".
+            
+            new_mol.draw()
+            self.paper.save_state_to_undo_stack("Import SMILES")
+            self.view.centerOn(cx, cy)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Could not convert SMILES: {str(e)}")

@@ -132,3 +132,10 @@ class TextLabel(DrawableObject):
         # Text doesn't rotate in this implementation
         pass
 
+    def clone(self):
+        new_text = TextLabel(self.x, self.y, text=self.text)
+        new_text.color = self.color
+        new_text.font_name = self.font_name
+        new_text.font_size = self.font_size
+        return new_text
+

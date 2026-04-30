@@ -196,3 +196,8 @@ class Arrow(DrawableObject):
         self.p2 = (x * c - y * s + cx, x * s + y * c + cy)
         
         self.draw()
+
+    def clone(self):
+        new_arrow = Arrow(self.p1, self.p2, type=self.type, curvature=self.curvature)
+        new_arrow.color = self.color
+        return new_arrow
