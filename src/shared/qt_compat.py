@@ -22,7 +22,7 @@ try:
         QGraphicsLineItem, QGraphicsRectItem, QGraphicsPolygonItem, 
         QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsSimpleTextItem, 
         QGraphicsTextItem, QGraphicsItemGroup, QGraphicsProxyWidget,
-        QGraphicsItem, QToolBar
+        QGraphicsItem, QToolBar, QDialogButtonBox
     )
     from PySide6.QtCore import Qt, QThread, Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication, QStandardPaths, QSize
     from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QFontMetricsF, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette, QTransform
@@ -46,7 +46,7 @@ except ImportError as e:
             QGraphicsLineItem, QGraphicsRectItem, QGraphicsPolygonItem, 
             QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsSimpleTextItem, 
             QGraphicsTextItem, QGraphicsItemGroup, QGraphicsProxyWidget,
-            QGraphicsItem, QToolBar
+            QGraphicsItem, QToolBar, QDialogButtonBox
         )
         from PyQt6.QtCore import Qt, QThread, pyqtSignal as Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication, QStandardPaths, QSize
         from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QFontMetricsF, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette, QTransform
@@ -417,6 +417,17 @@ except ImportError as e:
             def set_bond_width(self, width): pass
             def set_atom_size(self, size): pass
             def set_color_scheme(self, scheme): pass
+        
+        class QDialogButtonBox(QWidget):
+            def __init__(self, buttons=None, parent=None): 
+                super().__init__(parent)
+                self.accepted = self.Signal()
+                self.rejected = self.Signal()
+            class StandardButton:
+                Ok = 1
+                Cancel = 2
+                Save = 4
+                Close = 8
         
         class QGraphicsView(QWidget):
             def __init__(self, parent=None): super().__init__(parent)

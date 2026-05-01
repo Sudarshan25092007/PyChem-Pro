@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 from src.shared.qt_compat import *
+from src.shared.qt_compat import QImage, QPainter, QFileDialog, QRectF
+
 from ..paper import Paper
-from ..tools import StructureTool, EraserTool, toolsettings
+from ..tools import StructureTool, EraserTool, ShapeTool, toolsettings
+from ..shapes import Rectangle, Ellipse
 from ..app_data import App, Settings
 
 class SketcherWidget(QWidget):
@@ -142,6 +145,22 @@ class SketcherWidget(QWidget):
 
         self.toolbar.addSeparator()
 
+        self.action_rectangle = QAction("Rect", self)
+        self.action_rectangle.setCheckable(True)
+        self.action_rectangle.setToolTip("Rectangle (Shift for Square)")
+        self.action_rectangle.triggered.connect(lambda: self._on_tool_changed(self.action_rectangle))
+        self.toolbar.addAction(self.action_rectangle)
+        self.tool_group.addAction(self.action_rectangle)
+
+        self.action_ellipse = QAction("Ellipse", self)
+        self.action_ellipse.setCheckable(True)
+        self.action_ellipse.setToolTip("Ellipse (Shift for Circle)")
+        self.action_ellipse.triggered.connect(lambda: self._on_tool_changed(self.action_ellipse))
+        self.toolbar.addAction(self.action_ellipse)
+        self.tool_group.addAction(self.action_ellipse)
+
+        self.toolbar.addSeparator()
+
 
         # Right side: Canvas and Right Toolbar
         self.view = QGraphicsView()
@@ -215,6 +234,13 @@ class SketcherWidget(QWidget):
         self.addAction(self.action_paste)
 
         self.right_toolbar.addSeparator()
+
+        self.action_export = QAction("Export", self)
+        self.action_export.setToolTip("Export Selected as Image")
+        self.action_export.triggered.connect(self._on_export)
+        self.right_toolbar.addAction(self.action_export)
+
+        self.right_toolbar.addSeparator()
         
         self.action_smiles = QAction("SMILES", self)
         self.action_smiles.setToolTip("SMILES to 2D")
@@ -226,6 +252,25 @@ class SketcherWidget(QWidget):
         self.action_clear = QAction("Clear", self)
         self.action_clear.triggered.connect(self._on_clear)
         self.right_toolbar.addAction(self.action_clear)
+
+        self.right_toolbar.addSeparator()
+
+        self.action_select_all = QAction("Select All", self)
+        self.action_select_all.setShortcut(QKeySequence.SelectAll)
+        self.action_select_all.triggered.connect(self._on_select_all)
+        self.addAction(self.action_select_all)
+        
+        self.action_page_setup = QAction("Page", self)
+        self.action_page_setup.setToolTip("Page Setup")
+        self.action_page_setup.triggered.connect(self._on_page_setup)
+        self.right_toolbar.addAction(self.action_page_setup)
+        
+        self.right_toolbar.addSeparator()
+        
+        self.action_color = QAction("Color", self)
+        self.action_color.setToolTip("Change Color of Selected")
+        self.action_color.triggered.connect(self._on_color)
+        self.right_toolbar.addAction(self.action_color)
 
         # Spacer for Right Toolbar
         right_spacer = QWidget()
@@ -385,6 +430,10 @@ class SketcherWidget(QWidget):
             self.current_tool = self.tools["fish_up"]
         elif action == self.action_fish_down:
             self.current_tool = self.tools["fish_down"]
+        elif action == self.action_rectangle:
+            self.current_tool = ShapeTool(Rectangle)
+        elif action == self.action_ellipse:
+            self.current_tool = ShapeTool(Ellipse)
         App.tool = self.current_tool
 
     def _on_bond_type_changed(self, text):
@@ -493,13 +542,181 @@ class SketcherWidget(QWidget):
                         b.draw()
             self.paper.update()
 
+    def _on_select_all(self):
+        from ..tools import SelectTool
+        if not isinstance(self.current_tool, SelectTool):
+            self.action_select.setChecked(True)
+            self._on_tool_changed(self.action_select)
+        
+        # Select everything top-level
+        self.current_tool.objs = list(self.paper.objects)
+        self.current_tool._move_targets = list(self.paper.objects)
+        for o in self.paper.objects:
+            if hasattr(o, 'set_selected'):
+                o.set_selected(True)
+        self.paper.update()
+
+    def _on_page_setup(self):
+        from src.shared.qt_compat import QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QVBoxLayout, QComboBox, QRadioButton, QHBoxLayout, QLabel
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Page Setup")
+        layout = QVBoxLayout(dialog)
+        
+        form = QFormLayout()
+        
+        # Presets
+        preset_combo = QComboBox()
+        preset_combo.addItems(["Custom", "A4", "Letter", "Legal"])
+        form.addRow("Paper Size:", preset_combo)
+        
+        # Units
+        unit_combo = QComboBox()
+        unit_combo.addItems(["Pixels", "Inches"])
+        form.addRow("Units:", unit_combo)
+        
+        # Orientation
+        orient_layout = QHBoxLayout()
+        portrait_radio = QRadioButton("Portrait")
+        landscape_radio = QRadioButton("Landscape")
+        portrait_radio.setChecked(True)
+        orient_layout.addWidget(portrait_radio)
+        orient_layout.addWidget(landscape_radio)
+        form.addRow("Orientation:", orient_layout)
+        
+        w_spin = QSpinBox()
+        w_spin.setRange(100, 10000)
+        w_spin.setValue(int(self.paper.width()))
+        
+        h_spin = QSpinBox()
+        h_spin.setRange(100, 10000)
+        h_spin.setValue(int(self.paper.height()))
+        
+        form.addRow("Width:", w_spin)
+        form.addRow("Height:", h_spin)
+        layout.addLayout(form)
+        
+        # Logic for presets and units
+        def update_values():
+            unit = unit_combo.currentText()
+            preset = preset_combo.currentText()
+            is_portrait = portrait_radio.isChecked()
+            
+            # DPI = 100 for conversion
+            dpi = 100.0
+            
+            if preset != "Custom":
+                if preset == "A4":
+                    w, h = 8.27, 11.69
+                elif preset == "Letter":
+                    w, h = 8.5, 11.0
+                elif preset == "Legal":
+                    w, h = 8.5, 14.0
+                
+                if not is_portrait:
+                    w, h = h, w
+                
+                if unit == "Pixels":
+                    w_spin.setValue(int(w * dpi))
+                    h_spin.setValue(int(h * dpi))
+                else:
+                    w_spin.setValue(int(w))
+                    h_spin.setValue(int(h))
+            
+            if unit == "Inches":
+                w_spin.setRange(1, 100)
+                h_spin.setRange(1, 100)
+            else:
+                w_spin.setRange(100, 10000)
+                h_spin.setRange(100, 10000)
+
+        preset_combo.currentIndexChanged.connect(update_values)
+        unit_combo.currentIndexChanged.connect(update_values)
+        portrait_radio.toggled.connect(update_values)
+        
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        layout.addWidget(btns)
+        
+        if dialog.exec():
+            w = w_spin.value()
+            h = h_spin.value()
+            if unit_combo.currentText() == "Inches":
+                w *= 100
+                h *= 100
+            self.paper.setSize(w, h)
+            self.paper.save_state_to_undo_stack("Page Setup")
+
+    def _on_color(self):
+        from src.shared.qt_compat import QColorDialog, QColor
+        
+        # Get current color from first selected object if possible
+        initial_color = QColor(0, 0, 0)
+        from ..tools import SelectTool
+        if isinstance(self.current_tool, SelectTool) and self.current_tool.objs:
+            obj = self.current_tool.objs[0]
+            if hasattr(obj, 'color'):
+                c = obj.color
+                initial_color = QColor(c[0], c[1], c[2])
+        
+        color = QColorDialog.getColor(initial_color, self, "Select Color")
+        if color.isValid():
+            new_color = (color.red(), color.green(), color.blue())
+            
+            # Apply to selected
+            if isinstance(self.current_tool, SelectTool):
+                targets = self.current_tool.objs
+                if not targets: return
+                
+                for obj in targets:
+                    self._apply_color_recursive(obj, new_color)
+                
+                self.paper.save_state_to_undo_stack("Change Color")
+                self.paper.update()
+
+    def _apply_color_recursive(self, obj, color):
+        # Apply to the object itself
+        if hasattr(obj, 'color'):
+            obj.color = color
+        
+        # If it's a molecule, apply to atoms and bonds
+        # Only do this if the object is explicitly a Molecule
+        from ..molecule import Molecule
+        if isinstance(obj, Molecule):
+            if hasattr(obj, 'atoms'):
+                for a in obj.atoms:
+                    a.color = color
+                    a.draw()
+            if hasattr(obj, 'bonds'):
+                for b in obj.bonds:
+                    b.color = color
+                    b.draw()
+        
+        if hasattr(obj, 'draw'):
+            obj.draw()
+
     def _on_copy(self):
         from ..tools import SelectTool
         if isinstance(self.current_tool, SelectTool):
             App.clipboard = []
-            for obj in self.current_tool.objs:
+            seen_mols = set()
+            # Use both objs and _move_targets to ensure we capture what the user intended
+            targets = self.current_tool.objs
+            if not targets and hasattr(self.current_tool, '_move_targets'):
+                targets = self.current_tool._move_targets
+                
+            for obj in targets:
                 if hasattr(obj, 'clone'):
                     App.clipboard.append(obj.clone())
+                elif hasattr(obj, 'molecule') and obj.molecule:
+                    mol = obj.molecule
+                    if id(mol) not in seen_mols:
+                        App.clipboard.append(mol.clone())
+                        seen_mols.add(id(mol))
+                elif hasattr(obj, 'parent') and obj.parent and hasattr(obj.parent, 'clone'):
+                    if id(obj.parent) not in seen_mols:
+                        App.clipboard.append(obj.parent.clone())
+                        seen_mols.add(id(obj.parent))
             print(f"Copied {len(App.clipboard)} objects to clipboard")
 
     def _on_paste(self):
@@ -508,6 +725,12 @@ class SketcherWidget(QWidget):
         
         new_objs = []
         offset = 20
+        
+        # Deselect current selection before pasting
+        for o in self.paper.objects:
+            if hasattr(o, 'set_selected'):
+                o.set_selected(False)
+        
         for obj in App.clipboard:
             if not hasattr(obj, 'clone'): continue
             new_obj = obj.clone()
@@ -527,6 +750,7 @@ class SketcherWidget(QWidget):
         from ..tools import SelectTool
         if isinstance(self.current_tool, SelectTool):
             self.current_tool.objs = new_objs
+            self.current_tool._move_targets = list(new_objs)
             for o in self.paper.objects:
                 if hasattr(o, 'set_selected'):
                     o.set_selected(o in new_objs)
@@ -541,6 +765,88 @@ class SketcherWidget(QWidget):
                 # Handle molecules that don't have move_by (though they should)
                 for a in obj.atoms:
                     a.move_by(offset, offset)
+
+    def _on_export(self):
+        from ..tools import SelectTool
+        from ..common import bbox_of_bboxes
+        from ..paper import Paper
+        
+        # 1. Identify selected objects (top-level)
+        selected_objs = []
+        if isinstance(self.current_tool, SelectTool):
+            targets = []
+            if hasattr(self.current_tool, '_move_targets') and self.current_tool._move_targets:
+                targets = self.current_tool._move_targets
+            else:
+                targets = self.current_tool.objs
+                
+            for obj in targets:
+                top = obj
+                if hasattr(obj, 'molecule') and obj.molecule:
+                    top = obj.molecule
+                elif hasattr(obj, 'parent') and obj.parent:
+                    top = obj.parent
+                
+                if top not in selected_objs:
+                    selected_objs.append(top)
+        
+        if not selected_objs:
+            QMessageBox.warning(self, "Export", "Please select the objects you want to export.")
+            return
+
+        # 2. Get combined bounding box
+        bboxes = []
+        for obj in selected_objs:
+            if hasattr(obj, 'bounding_box'):
+                bb = obj.bounding_box()
+                if bb: bboxes.append(bb)
+        
+        if not bboxes:
+            QMessageBox.warning(self, "Export", "Could not determine the bounding box of selected objects.")
+            return
+            
+        whole_bbox = bbox_of_bboxes(bboxes)
+        margin = 10
+        x1, y1, x2, y2 = whole_bbox
+        x1 -= margin; y1 -= margin; x2 += margin; y2 += margin
+        width = x2 - x1
+        height = y2 - y1
+
+        # 3. Get Export Settings
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export as Image", "", 
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;BMP Image (*.bmp)"
+        )
+        if not file_path: return
+        
+        dpi, ok = QInputDialog.getInt(self, "Export DPI", "Enter DPI:", value=300, minValue=72, maxValue=1200)
+        if not ok: return
+
+        # 4. Render to high-DPI image
+        scale = dpi / 100.0
+        img = QImage(int(width * scale), int(height * scale), QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.white)
+        
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        
+        # Use a temporary scene to render only selected objects
+        temp_paper = Paper()
+        for obj in selected_objs:
+            if hasattr(obj, 'clone'):
+                clone = obj.clone()
+                temp_paper.addObject(clone)
+                clone.draw()
+        
+        # Render the specific source rectangle into the image
+        temp_paper.render(painter, QRectF(0, 0, width * scale, height * scale), QRectF(x1, y1, width, height))
+        painter.end()
+        
+        if img.save(file_path):
+            QMessageBox.information(self, "Export", f"Successfully exported to {file_path}")
+        else:
+            QMessageBox.critical(self, "Export", "Failed to save image.")
 
     def _on_smiles_to_2d(self):
         text, ok = QInputDialog.getText(self, "SMILES to 2D", "Enter SMILES string:")

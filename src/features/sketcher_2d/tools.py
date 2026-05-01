@@ -638,21 +638,47 @@ class SelectTool(Tool):
             # Create clones of current move targets
             new_targets = []
             new_objs = []
+            seen_mols = set()
+            
             for obj in self._move_targets:
-                if hasattr(obj, 'clone'):
-                    clone = obj.clone()
+                target_to_clone = None
+                
+                # Check if this object belongs to a molecule we've already decided to clone
+                mol_id = None
+                if hasattr(obj, 'molecule') and obj.molecule:
+                    mol_id = id(obj.molecule)
+                elif hasattr(obj, 'parent') and obj.parent and hasattr(obj.parent, 'atoms'):
+                    mol_id = id(obj.parent)
+                
+                if mol_id and mol_id in seen_mols:
+                    continue # Skip this object, it will be handled by the molecule clone
+                
+                if hasattr(obj, 'clone') and not hasattr(obj, 'molecule'): # Top-level (Molecule, Arrow, etc.)
+                    target_to_clone = obj
+                    if hasattr(obj, 'atoms'): # It's a molecule
+                        seen_mols.add(id(obj))
+                elif hasattr(obj, 'molecule') and obj.molecule:
+                    target_to_clone = obj.molecule
+                    seen_mols.add(id(obj.molecule))
+                
+                if target_to_clone:
+                    clone = target_to_clone.clone()
                     App.paper.addObject(clone)
-                    clone.draw()
+                    # We don't call clone.draw() here because move_by below will call it
                     new_targets.append(clone)
                     new_objs.append(clone)
                 else:
-                    # If it can't be cloned, just move the original
+                    # If it's a standalone object (or something we want to move but not clone)
+                    # This check is slightly redundant now but safe
                     new_targets.append(obj)
             
             if new_objs:
                 self._move_targets = new_targets
                 self.objs = new_objs
                 self.is_copying = True
+                # NO: self.mouse_press_pos = (x, y) reset removed. 
+                # Keeping the original press pos allows dx, dy to correctly offset 
+                # the clones to the current mouse position in the first frame.
                 # Select the new objects
                 for o in App.paper.objects:
                     if hasattr(o, 'set_selected'):
@@ -777,3 +803,41 @@ class SelectTool(Tool):
         elif isinstance(focused, TextLabel):
             return False
         return False
+
+class ShapeTool(Tool):
+    def __init__(self, shape_class):
+        super().__init__()
+        self.shape_class = shape_class
+        self.p1 = None
+        self.current_shape = None
+
+    def on_mouse_press(self, x, y):
+        self.p1 = (x, y)
+        self.current_shape = self.shape_class(x, y, x, y)
+        App.paper.addObject(self.current_shape)
+        self.current_shape.draw()
+
+    def on_mouse_move(self, x, y, dragging):
+        if dragging and self.p1:
+            x1, y1 = self.p1
+            # Constraints (Shift for Square/Circle)
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+                dx = x - x1
+                dy = y - y1
+                size = max(abs(dx), abs(dy))
+                x = x1 + (size if dx > 0 else -size)
+                y = y1 + (size if dy > 0 else -size)
+            
+            self.current_shape.x2 = x
+            self.current_shape.y2 = y
+            self.current_shape.draw()
+
+    def on_mouse_release(self, x, y):
+        if self.current_shape:
+            bbox = self.current_shape.bounding_box()
+            if (bbox[2] - bbox[0]) < 5 and (bbox[3] - bbox[1]) < 5:
+                self.current_shape.delete_from_paper()
+            else:
+                App.paper.save_state_to_undo_stack(f"Add {self.current_shape.class_name}")
+        self.p1 = None
+        self.current_shape = None

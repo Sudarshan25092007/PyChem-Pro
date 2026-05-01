@@ -23,7 +23,7 @@ class App:
 class Default:
     """ default values for drawing properties. """
     atom_font_size = 12
-    bond_length = 24
+    bond_length = 40
     bond_width = 1.2
     bond_spacing = 6.0
     electron_dot_size = 2.0

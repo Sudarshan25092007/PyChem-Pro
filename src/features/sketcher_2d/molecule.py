@@ -211,25 +211,28 @@ class Molecule(OasaMolecule, DrawableObject):
         return None
 
     def move_by(self, dx, dy):
+        # Update all atom positions first
         for atom in self.atoms:
-            atom.move_by(dx, dy)
-            if self.paper:
-                atom.draw()
-        for b in self.bonds:
-            if self.paper:
-                b.draw()
+            atom.x += dx
+            atom.y += dy
+        # Then redraw everything to avoid stretching bonds during the update
+        if self.paper:
+            self.draw()
 
     def clone(self):
         new_mol = Molecule()
+        new_mol.scale_val = self.scale_val
         atom_map = {}
         for atom in self.atoms:
             new_atom = atom.copy()
             new_atom.molecule = new_mol
+            new_atom.color = atom.color
             new_mol.add_atom(new_atom)
             atom_map[atom] = new_atom
         for bond in self.bonds:
             new_bond = Bond()
             new_bond.set_type(bond.type)
+            new_bond.color = bond.color
             new_bond.connect_atoms(atom_map[bond.atoms[0]], atom_map[bond.atoms[1]])
             new_mol.add_bond(new_bond)
         return new_mol

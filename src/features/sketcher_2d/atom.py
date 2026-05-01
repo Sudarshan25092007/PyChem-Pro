@@ -18,7 +18,7 @@ class Atom(OasaAtom, DrawableObject):
     focus_priority = 5
     redraw_priority = 2
     is_toplevel = False
-    meta__undo_properties = ("symbol", "x", "y", "z", "charge", "isotope", "explicit_hydrogens", "show_symbol", "auto_hydrogens", "molecule")
+    meta__undo_properties = ("symbol", "x", "y", "z", "charge", "isotope", "explicit_hydrogens", "show_symbol", "auto_hydrogens", "molecule", "color")
     meta__undo_copy = ("properties_",)
     meta__undo_children_to_record = []
     meta__scalables = ("x", "y", "z")
