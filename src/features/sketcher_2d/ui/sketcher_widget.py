@@ -187,6 +187,18 @@ class SketcherWidget(QWidget):
 
         self.right_toolbar.addSeparator()
 
+        self.action_flip_h = QAction("Flip H", self)
+        self.action_flip_h.setToolTip("Flip Horizontal")
+        self.action_flip_h.triggered.connect(self._on_flip_h)
+        self.right_toolbar.addAction(self.action_flip_h)
+
+        self.action_flip_v = QAction("Flip V", self)
+        self.action_flip_v.setToolTip("Flip Vertical")
+        self.action_flip_v.triggered.connect(self._on_flip_v)
+        self.right_toolbar.addAction(self.action_flip_v)
+
+        self.right_toolbar.addSeparator()
+
         # Copy/Paste (Right Toolbar)
         self.action_copy = QAction("Copy", self)
         self.action_copy.setShortcut(QKeySequence.Copy)
@@ -283,24 +295,52 @@ class SketcherWidget(QWidget):
 
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             from ..tools import SelectTool
-            if isinstance(self.current_tool, SelectTool):
-                for obj in self.current_tool.objs[:]:  # Copy list to avoid modification during iteration
-                    if hasattr(obj, 'delete_from_paper'):
+            from ..atom import Atom
+            from ..bond import Bond
+            from ..molecule import Molecule
+            if isinstance(self.current_tool, SelectTool) and self.current_tool.objs:
+                # Save undo state BEFORE deletion
+                self.paper.save_state_to_undo_stack()
+                
+                for obj in self.current_tool.objs[:]:
+                    if isinstance(obj, Molecule):
+                        # Delete entire molecule
                         obj.delete_from_paper()
-                    elif hasattr(obj, 'atoms'):
-                        # It's a molecule
-                        self.paper.removeObject(obj)
-                    elif hasattr(obj, 'molecule'):
-                        # It's an atom or bond
-                        obj.delete_from_paper()
+                    elif isinstance(obj, Atom):
+                        # Delete single atom: disconnect bonds, remove from molecule
+                        mol = obj.molecule
+                        if mol:
+                            for bond in list(obj.neighbor_edges):
+                                bond.clear_drawings()
+                                bond.disconnect_atoms()
+                                mol.remove_bond(bond)
+                            mol.remove_atom(obj)
+                            obj.clear_drawings()
+                            obj.paper = None
+                            # Split disconnected fragments
+                            mol.split_fragments()
+                            # Remove molecule if empty
+                            if len(mol.atoms) == 0:
+                                mol.delete_from_paper()
+                            else:
+                                mol.draw()
+                    elif isinstance(obj, Bond):
+                        # Delete single bond: disconnect, split fragments
+                        mol = obj.molecule
+                        if mol:
+                            obj.clear_drawings()
+                            obj.disconnect_atoms()
+                            mol.remove_bond(obj)
+                            mol.split_fragments()
+                            mol.draw()
                     else:
-                        # TextLabel or other drawable object
-                        self.paper.removeObject(obj)
+                        # TextLabel, Arrow, or other drawable object
+                        obj.delete_from_paper()
+                
                 self.current_tool.objs = []
                 for o in self.paper.objects:
                     if hasattr(o, 'set_selected'):
                         o.set_selected(False)
-                self.paper.save_state_to_undo_stack()
         super().keyPressEvent(event)
 
     def _zoom(self, factor):
@@ -359,11 +399,25 @@ class SketcherWidget(QWidget):
 
     def _on_import(self):
         from ..fileformat_smiles import Smiles
-        mols = [obj for obj in self.paper.objects if obj.class_name == "Molecule"]
-        if not mols: return
+        from ..tools import SelectTool
+        
+        target_mol = None
+        if isinstance(self.current_tool, SelectTool) and self.current_tool.objs:
+            # Look for a molecule in selected objects
+            for obj in self.current_tool.objs:
+                if obj.class_name == "Molecule":
+                    target_mol = obj
+                    break
+        
+        if not target_mol:
+            # Fallback to last molecule if none selected
+            mols = [obj for obj in self.paper.objects if obj.class_name == "Molecule"]
+            if not mols: return
+            target_mol = mols[-1]
+
         gen = Smiles()
         try:
-            smiles = gen.generate(mols[-1])
+            smiles = gen.generate(target_mol)
             if smiles:
                 self.molecule_imported.emit(smiles)
         except Exception as e:
@@ -371,7 +425,7 @@ class SketcherWidget(QWidget):
             # Try to import anyway with a fallback
             try:
                 # Try without marking aromatic bonds
-                smiles = gen._oasa.get_smiles(mols[-1])
+                smiles = gen._oasa.get_smiles(target_mol)
                 if smiles:
                     self.molecule_imported.emit(smiles)
             except:
@@ -382,6 +436,62 @@ class SketcherWidget(QWidget):
 
     def _on_redo(self):
         self.paper.redo()
+
+    def _on_flip_h(self):
+        from ..tools import SelectTool
+        if isinstance(self.current_tool, SelectTool) and self.current_tool._move_targets:
+            self.paper.save_state_to_undo_stack("Flip Horizontal")
+            # Flip selected objects horizontally around their combined center
+            bboxes = []
+            for obj in self.current_tool._move_targets:
+                if hasattr(obj, 'bounding_box'):
+                    bb = obj.bounding_box()
+                    if bb: bboxes.append(bb)
+            
+            if not bboxes: return
+            from ..common import bbox_of_bboxes
+            whole_bbox = bbox_of_bboxes(bboxes)
+            center_x = (whole_bbox[0] + whole_bbox[2]) / 2
+            
+            for obj in self.current_tool._move_targets:
+                if hasattr(obj, 'flip_horizontal'):
+                    obj.flip_horizontal(center_x)
+                # Ensure redraw
+                if hasattr(obj, 'draw'):
+                    obj.draw()
+                # If it's an atom, redraw connected bonds
+                if hasattr(obj, 'neighbor_edges'):
+                    for b in obj.neighbor_edges:
+                        b.draw()
+            self.paper.update()
+
+    def _on_flip_v(self):
+        from ..tools import SelectTool
+        if isinstance(self.current_tool, SelectTool) and self.current_tool._move_targets:
+            self.paper.save_state_to_undo_stack("Flip Vertical")
+            # Flip selected objects vertically around their combined center
+            bboxes = []
+            for obj in self.current_tool._move_targets:
+                if hasattr(obj, 'bounding_box'):
+                    bb = obj.bounding_box()
+                    if bb: bboxes.append(bb)
+            
+            if not bboxes: return
+            from ..common import bbox_of_bboxes
+            whole_bbox = bbox_of_bboxes(bboxes)
+            center_y = (whole_bbox[1] + whole_bbox[3]) / 2
+            
+            for obj in self.current_tool._move_targets:
+                if hasattr(obj, 'flip_vertical'):
+                    obj.flip_vertical(center_y)
+                # Ensure redraw
+                if hasattr(obj, 'draw'):
+                    obj.draw()
+                # If it's an atom, redraw connected bonds
+                if hasattr(obj, 'neighbor_edges'):
+                    for b in obj.neighbor_edges:
+                        b.draw()
+            self.paper.update()
 
     def _on_copy(self):
         from ..tools import SelectTool
@@ -436,19 +546,17 @@ class SketcherWidget(QWidget):
             
         try:
             from src.features.smiles_parser.services.parser import parse_smiles
-            from src.features.smiles_parser.rules.aromaticity import kekulize
-            from src.features.layout_2d.generators.coordgen2d_smiles_pure_oasa import CoordinateGenerator2DSMILES
             from ..molecule import Molecule
             from ..atom import Atom
             from ..bond import Bond
             from src.core.domain.models.bond import BondType
             
+            # parse_smiles uses OASA's text_to_mol(calc_coords=1,
+            # localize_aromatic_bonds=True), which already:
+            #   1. Generates high-quality 2D coordinates (x2d/y2d)
+            #   2. Kekulizes aromatic bonds (alternating single/double)
+            # No need to call kekulize or CoordinateGenerator2DSMILES.
             mol_domain = parse_smiles(text.strip())
-            # Force kekulization to show double bonds in rings
-            kekulize(mol_domain)
-            
-            gen = CoordinateGenerator2DSMILES(mol_domain)
-            coords = gen.generate()
             
             # Place at center of view
             view_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
@@ -458,38 +566,35 @@ class SketcherWidget(QWidget):
             self.paper.addObject(new_mol)
             
             atom_map = {}
-            scale = 40 # Increased scale for better visibility
+            scale = 40  # Scale for better visibility
             
             for atom in mol_domain.atoms:
+                if atom.symbol == 'H':
+                    continue  # Skip explicit H atoms in sketcher
                 new_atom = Atom(atom.symbol)
                 new_atom.charge = atom.formal_charge
-                if atom.index in coords:
-                    new_atom.x = cx + coords[atom.index][0] * scale
-                    new_atom.y = cy + coords[atom.index][1] * scale
+                if hasattr(atom, 'x2d') and atom.x2d is not None:
+                    new_atom.x = cx + atom.x2d * scale
+                    new_atom.y = cy + atom.y2d * scale
                 else:
                     new_atom.x, new_atom.y = cx, cy
                 new_mol.add_atom(new_atom)
                 atom_map[atom.index] = new_atom
             
             for bond in mol_domain.bonds:
+                # Skip bonds involving H atoms
+                if bond.begin_atom_idx not in atom_map or bond.end_atom_idx not in atom_map:
+                    continue
                 new_bond = Bond()
                 btype = "single"
                 if bond.bond_type == BondType.DOUBLE: btype = "double"
                 elif bond.bond_type == BondType.TRIPLE: btype = "triple"
-                elif bond.bond_type == BondType.AROMATIC: 
-                    # For aromatic, we let oasa or simple alternating logic handle it later, 
-                    # but for now just use alternating pattern or single.
-                    # Actually OASA kekulizes aromatic bonds during text_to_mol.
-                    # Since we use parse_smiles, we should check if it's already kekulized.
-                    btype = "single" 
+                # OASA already kekulized aromatic bonds to single/double,
+                # so BondType.AROMATIC should be rare here. Treat as single.
                 
                 new_bond.set_type(btype)
                 new_bond.connect_atoms(atom_map[bond.begin_atom_idx], atom_map[bond.end_atom_idx])
                 new_mol.add_bond(new_bond)
-            
-            # Handle aromatic bonds specifically if any
-            # For simplicity, if we have aromatic bonds, we can try to kekulize them
-            # but sketcher Bond class prefers "single"/"double".
             
             new_mol.draw()
             self.paper.save_state_to_undo_stack("Import SMILES")

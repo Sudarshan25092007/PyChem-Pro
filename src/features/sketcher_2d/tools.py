@@ -161,6 +161,9 @@ class EraserTool(Tool):
     def on_mouse_press(self, x, y):
         focused = App.paper.focused_obj
         if focused:
+            # Save undo state BEFORE deletion
+            App.paper.save_state_to_undo_stack()
+            
             if isinstance(focused, Atom):
                 mol = focused.molecule
                 # Remove connected bonds first
@@ -185,8 +188,6 @@ class EraserTool(Tool):
                 focused.delete_from_paper()
             elif isinstance(focused, TextLabel):
                 focused.delete_from_paper()
-            
-            App.paper.save_state_to_undo_stack()
 
 class RotateTool(Tool):
     def __init__(self):
@@ -250,11 +251,22 @@ class TemplateTool(Tool):
         self.template_name = template_name
 
     def on_mouse_press(self, x, y):
-        focused = App.paper.focused_obj
-        if isinstance(focused, Bond):
-            self._fuse_to_bond(focused, x, y)
+        # Look for a bond in the vicinity to fuse to, even if an atom is focused
+        objs = App.paper.objectsInRect([x - 7, y - 7, x + 7, y + 7])
+        bond = None
+        for obj in objs:
+            if isinstance(obj, Bond):
+                bond = obj
+                break
+        
+        if bond:
+            self._fuse_to_bond(bond, x, y)
         else:
-            self._place_at(x, y)
+            focused = App.paper.focused_obj
+            if isinstance(focused, Bond):
+                self._fuse_to_bond(focused, x, y)
+            else:
+                self._place_at(x, y)
         App.paper.save_state_to_undo_stack()
 
     def _place_at(self, x, y):
@@ -445,6 +457,7 @@ class TextTool(Tool):
         if isinstance(focused, TextLabel):
             self.current_text = focused
             App.paper.changeFocusTo(focused)
+            App.paper.locked_focus_obj = focused
         else:
             # Create new text with empty string
             text = TextLabel(x, y, "")
@@ -452,6 +465,7 @@ class TextTool(Tool):
             text.draw()
             self.current_text = text
             App.paper.changeFocusTo(text)
+            App.paper.locked_focus_obj = text
         App.paper.save_state_to_undo_stack()
 
     def on_key_press(self, key, text):
@@ -460,7 +474,8 @@ class TextTool(Tool):
 class SelectTool(Tool):
     def __init__(self):
         self.mouse_press_pos = None
-        self.objs = []
+        self.objs = []            # Selected objects (for display/delete)
+        self._move_targets = []   # Objects to move when dragging
         self.dragging_curvature = None
         self.selection_rect_item = None
         self.selection_start_pos = None
@@ -477,20 +492,31 @@ class SelectTool(Tool):
         focused = App.paper.focused_obj
         if focused:
             self.mode = "move"
-            # Get the top-level object (molecule, arrow, text, etc.)
-            if hasattr(focused, 'molecule') and focused.molecule:
-                obj = focused.molecule
-            elif hasattr(focused, 'parent') and focused.parent:
-                obj = focused.parent
-            else:
-                obj = focused
             
-            self.objs = [obj]
+            # If we click on something already selected (or its parent molecule is selected),
+            # move the current selection as a group.
+            is_selected = focused in self.objs or (hasattr(focused, 'molecule') and focused.molecule in self.objs)
+            
+            if is_selected:
+                self._move_targets = list(self.objs)
+            else:
+                # If we click on something NOT selected, select it and move whole molecule by default
+                self.objs = [focused]
+                if hasattr(focused, 'molecule') and focused.molecule:
+                    self._move_targets = [focused.molecule]
+                else:
+                    self._move_targets = [focused]
             
             # Update selection visuals
+            # 1. Clear all selection visuals from top-level objects
             for o in App.paper.objects:
                 if hasattr(o, 'set_selected'):
-                    o.set_selected(o in self.objs)
+                    o.set_selected(False)
+            
+            # 2. Set selection for exactly what is in self.objs
+            for o in self.objs:
+                if hasattr(o, 'set_selected'):
+                    o.set_selected(True)
             
             # Check for curvature dragging (if clicked near p2 of an arrow)
             if isinstance(focused, Arrow):
@@ -501,9 +527,28 @@ class SelectTool(Tool):
         else:
             self.mode = "select"
             self.objs = []
+            self._move_targets = []
             for o in App.paper.objects:
                 if hasattr(o, 'set_selected'):
                     o.set_selected(False)
+
+    def on_mouse_double_click(self, x, y):
+        focused = App.paper.focused_obj
+        if focused:
+            # Double click selects the whole molecule or parent object
+            if hasattr(focused, 'molecule') and focused.molecule:
+                obj = focused.molecule
+            elif hasattr(focused, 'parent') and focused.parent:
+                obj = focused.parent
+            else:
+                obj = focused
+            
+            self.objs = [obj]
+            self._move_targets = [obj]
+            # Update selection visuals
+            for o in App.paper.objects:
+                if hasattr(o, 'set_selected'):
+                    o.set_selected(o in self.objs)
 
     def on_right_click(self, x, y):
         self.right_click_press = (x, y)
@@ -519,6 +564,7 @@ class SelectTool(Tool):
             
             if obj not in self.objs:
                 self.objs = [obj]
+                self._move_targets = [obj]
             
             for o in App.paper.objects:
                 if hasattr(o, 'set_selected'):
@@ -531,8 +577,8 @@ class SelectTool(Tool):
         
         if self.rotating and self.right_click_press:
             # Rotate selected objects with right click
-            if not self.objs: return
-            obj = self.objs[0]
+            if not self._move_targets: return
+            obj = self._move_targets[0]
             if not hasattr(obj, 'get_center'): return
             
             center = obj.get_center()
@@ -583,24 +629,26 @@ class SelectTool(Tool):
             self.selection_rect_item = App.paper.addRect(rect, color=(100, 100, 255), width=1, fill=(100, 100, 255, 50))
             return
 
-        if not self.objs: return
+        if not self._move_targets: return
         
         # Move selected objects
         dx = x - self.mouse_press_pos[0]
         dy = y - self.mouse_press_pos[1]
         
-        for obj in self.objs:
+        if dx == 0 and dy == 0: return
+
+        for obj in self._move_targets:
             if hasattr(obj, 'move_by'):
                 obj.move_by(dx, dy)
-            elif hasattr(obj, 'atoms'):
-                # It's a molecule
-                for a in obj.atoms:
-                    a.move_by(dx, dy)
-                    a.draw()
-                for b in obj.bonds:
-                    b.draw()
-            elif hasattr(obj, 'draw'):
-                obj.draw()
+                # If it's a top-level object or a partial molecule selection (Atom), redraw
+                if hasattr(obj, 'atoms'): # Molecule
+                    obj.draw()
+                else: # Atom, Arrow, TextLabel
+                    obj.draw()
+                    # For atoms, we must also redraw connected bonds
+                    if hasattr(obj, 'neighbor_edges'):
+                        for bond in obj.neighbor_edges:
+                            bond.draw()
         
         self.mouse_press_pos = (x, y)
 
@@ -608,7 +656,7 @@ class SelectTool(Tool):
         if self.rotating:
             self.rotating = False
             self.right_click_press = None
-            if self.objs:
+            if self._move_targets:
                 App.paper.save_state_to_undo_stack()
             return
         
@@ -616,26 +664,56 @@ class SelectTool(Tool):
             App.paper.removeItem(self.selection_rect_item)
             self.selection_rect_item = None
             
-            # Select objects within the rectangle
+            # Select individual objects within the rectangle.
+            # Unlike double-click which selects the whole molecule,
+            # rectangular selection picks only the atoms/bonds inside.
             x1, y1 = self.selection_start_pos
             x2, y2 = x, y
             rect = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
             
-            # Get objects in the selection rectangle
             selected = App.paper.objectsInRect(rect)
             self.objs = []
+            self._move_targets = []
+            
+            # Identify if we've captured entire molecules or just parts
+            potential_mols = {} # mol_id -> [selected_atoms_count, total_atoms_count, mol_obj]
             for obj in selected:
+                if obj not in self.objs:
+                    self.objs.append(obj)
                 if hasattr(obj, 'molecule') and obj.molecule:
-                    if obj.molecule not in self.objs:
-                        self.objs.append(obj.molecule)
-                else:
-                    if obj not in self.objs:
-                        self.objs.append(obj)
+                    mol = obj.molecule
+                    if id(mol) not in potential_mols:
+                        potential_mols[id(mol)] = [0, len(mol.atoms), mol]
+                    if hasattr(obj, 'symbol'): # It's an atom
+                        potential_mols[id(mol)][0] += 1
+            
+            # If an entire molecule is within the rectangle, use the molecule as move target.
+            # Otherwise, use individual atoms.
+            handled_mol_ids = set()
+            for mol_id, (sel_count, total_count, mol) in potential_mols.items():
+                if sel_count == total_count:
+                    self._move_targets.append(mol)
+                    handled_mol_ids.add(mol_id)
+            
+            for obj in self.objs:
+                if isinstance(obj, Bond): continue # Bonds move via atoms
+                if hasattr(obj, 'molecule') and obj.molecule:
+                    if id(obj.molecule) not in handled_mol_ids:
+                        if obj not in self._move_targets:
+                            self._move_targets.append(obj)
+                elif obj not in self._move_targets:
+                    self._move_targets.append(obj)
             
             # Update selection visuals
+            # 1. Clear all selection visuals from top-level objects
             for o in App.paper.objects:
                 if hasattr(o, 'set_selected'):
-                    o.set_selected(o in self.objs)
+                    o.set_selected(False)
+            
+            # 2. Set selection for exactly what is in self.objs
+            for o in self.objs:
+                if hasattr(o, 'set_selected'):
+                    o.set_selected(True)
         
         if self.objs or self.dragging_curvature:
             App.paper.save_state_to_undo_stack()

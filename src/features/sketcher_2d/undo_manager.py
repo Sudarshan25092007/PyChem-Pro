@@ -68,15 +68,12 @@ class PaperState:
         return objs
 
     def restore_state(self):
-        # 1. Remove objects currently on paper that are NOT in this state
-        target_objs = [data[0] for data in self.objects_data]
+        # 1. Clear all current drawings from the paper
         current_objs = self._get_all_objects(self.paper.objects)
-        
         for obj in current_objs:
-            if obj not in target_objs:
-                obj.delete_from_paper()
+            obj.clear_drawings()
         
-        # 2. Restore attributes and redraw
+        # 2. Restore attributes
         for obj, state in self.objects_data:
             obj.paper = self.paper
             for attr, val in state.items():
@@ -84,7 +81,30 @@ class PaperState:
                     setattr(obj, attr, copy.copy(val))
                 else:
                     setattr(obj, attr, val)
+            
+            # Sync aliased attributes (e.g., vertices↔atoms, edges↔bonds)
+            for alias_from, alias_to in getattr(obj, "meta__same_objects", {}).items():
+                if alias_to in state:
+                    setattr(obj, alias_from, getattr(obj, alias_to))
+        
+        # 3. Rebuild OASA internal graph structures (_neighbors)
+        for obj, state in self.objects_data:
+            if hasattr(obj, 'atoms') and hasattr(obj, 'bonds'):
+                # It's a Molecule — rebuild OASA neighbor mappings
+                for atom in obj.atoms:
+                    atom._neighbors = {}
+                for bond in obj.bonds:
+                    if hasattr(bond, 'atoms') and len(bond.atoms) == 2:
+                        a1, a2 = bond.atoms[0], bond.atoms[1]
+                        a1._neighbors[bond] = a2
+                        a2._neighbors[bond] = a1
+                if hasattr(obj, "_flush_cache"):
+                    obj._flush_cache()
+        
+        # 4. Set top-level objects and redraw
+        self.paper.objects = list(self.top_levels)
+        
+        for obj, state in self.objects_data:
             obj.draw()
             
-        self.paper.objects = list(self.top_levels)
         self.paper.redraw_dirty_objects()

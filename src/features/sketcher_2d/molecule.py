@@ -146,7 +146,7 @@ class Molecule(OasaMolecule, DrawableObject):
             i = 0
             while i < len(to_process):
                 a2 = to_process[i]
-                if abs(a2.x - a1.x) <= 2 and abs(a2.y - a1.y) <= 2:
+                if abs(a2.x - a1.x) <= 5 and abs(a2.y - a1.y) <= 5:
                     replacement_dict[a2] = a1
                     to_process.pop(i)
                     for bond in list(a2.neighbor_edges):
@@ -173,6 +173,14 @@ class Molecule(OasaMolecule, DrawableObject):
         avg_y = sum(a.y for a in self.atoms) / len(self.atoms)
         return avg_x, avg_y
 
+    def bounding_box(self):
+        if not self.atoms: return [0, 0, 0, 0]
+        x1 = min(a.x for a in self.atoms)
+        y1 = min(a.y for a in self.atoms)
+        x2 = max(a.x for a in self.atoms)
+        y2 = max(a.y for a in self.atoms)
+        return [x1 - 10, y1 - 10, x2 + 10, y2 + 10]
+
     def rotate(self, angle, center=None):
         if center is None: center = self.get_center()
         cx, cy = center
@@ -181,6 +189,16 @@ class Molecule(OasaMolecule, DrawableObject):
             x, y = a.x - cx, a.y - cy
             a.x = x * c - y * s + cx
             a.y = x * s + y * c + cy
+
+    def flip_horizontal(self, center_x):
+        for a in self.atoms:
+            a.x = 2 * center_x - a.x
+        self.draw()
+
+    def flip_vertical(self, center_y):
+        for a in self.atoms:
+            a.y = 2 * center_y - a.y
+        self.draw()
 
     def get_bond_between_atoms(self, a1, a2):
         for bond in self.bonds:
@@ -211,6 +229,12 @@ class Molecule(OasaMolecule, DrawableObject):
             new_bond.connect_atoms(atom_map[bond.atoms[0]], atom_map[bond.atoms[1]])
             new_mol.add_bond(new_bond)
         return new_mol
+
+    def set_selected(self, select):
+        for atom in self.atoms:
+            atom.set_selected(select)
+        for bond in self.bonds:
+            bond.set_selected(select)
 
     def draw(self):
         for atom in self.atoms:

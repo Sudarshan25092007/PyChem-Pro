@@ -232,6 +232,18 @@ class Atom(OasaAtom, DrawableObject):
             return common.bbox_of_bboxes(bboxes)
         return [self.x - 2, self.y - 2, self.x + 2, self.y + 2]
 
+    def move_by(self, dx, dy):
+        self.x += dx
+        self.y += dy
+
+    def flip_horizontal(self, center_x):
+        self.x = 2 * center_x - self.x
+        self.draw()
+
+    def flip_vertical(self, center_y):
+        self.y = 2 * center_y - self.y
+        self.draw()
+
     def set_focus(self, focus):
         if not self.paper: return
         if focus:
@@ -246,6 +258,11 @@ class Atom(OasaAtom, DrawableObject):
 
     def set_selected(self, select):
         if not self.paper: return
+        if self._selection_item:
+            try: self.paper.removeItem(self._selection_item)
+            except: pass
+            self._selection_item = None
+            
         if select:
             rect = self.x - 4, self.y - 4, self.x + 4, self.y + 4
             self._selection_item = self.paper.addEllipse(rect, fill=Settings.selection_color)

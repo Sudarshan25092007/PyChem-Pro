@@ -155,6 +155,10 @@ class Arrow(DrawableObject):
             try: self.paper.removeItem(self._focus_item)
             except: pass
             self._focus_item = None
+        if hasattr(self, '_selection_item') and self._selection_item:
+            try: self.paper.removeItem(self._selection_item)
+            except: pass
+            self._selection_item = None
 
     def set_focus(self, focus):
         if not self.paper: return
@@ -169,6 +173,19 @@ class Arrow(DrawableObject):
                 except: pass
                 self._focus_item = None
 
+    def set_selected(self, select):
+        if not self.paper: return
+        if select:
+            bbox = self.bounding_box()
+            from .app_data import Settings
+            self._selection_item = self.paper.addRect(bbox, color=Settings.selection_color, width=1)
+            self.paper.toSelectionLayer(self._selection_item)
+        else:
+            if hasattr(self, '_selection_item') and self._selection_item:
+                try: self.paper.removeItem(self._selection_item)
+                except: pass
+                self._selection_item = None
+
     def bounding_box(self):
         x1, y1 = self.p1
         x2, y2 = self.p2
@@ -180,6 +197,17 @@ class Arrow(DrawableObject):
     def move_by(self, dx, dy):
         self.p1 = (self.p1[0] + dx, self.p1[1] + dy)
         self.p2 = (self.p2[0] + dx, self.p2[1] + dy)
+        self.draw()
+
+    def flip_horizontal(self, center_x):
+        self.p1 = (2 * center_x - self.p1[0], self.p1[1])
+        self.p2 = (2 * center_x - self.p2[0], self.p2[1])
+        self.draw()
+
+    def flip_vertical(self, center_y):
+        self.p1 = (self.p1[0], 2 * center_y - self.p1[1])
+        self.p2 = (self.p2[0], 2 * center_y - self.p2[1])
+        self.curvature *= -1
         self.draw()
 
     def rotate(self, angle, center):

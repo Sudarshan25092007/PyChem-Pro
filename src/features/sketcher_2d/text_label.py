@@ -128,6 +128,14 @@ class TextLabel(DrawableObject):
         self.y += dy
         self.draw()
 
+    def flip_horizontal(self, center_x):
+        self.x = 2 * center_x - self.x
+        self.draw()
+
+    def flip_vertical(self, center_y):
+        self.y = 2 * center_y - self.y
+        self.draw()
+
     def rotate(self, angle, center):
         # Text doesn't rotate in this implementation
         pass

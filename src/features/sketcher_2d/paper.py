@@ -257,6 +257,13 @@ class Paper(QGraphicsScene):
             self.locked_focus_obj = None
         self.dragging = False
         QGraphicsScene.mouseReleaseEvent(self, ev)
+        
+    def mouseDoubleClickEvent(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton: return
+        x, y = ev.scenePos().x(), ev.scenePos().y()
+        if App.tool and hasattr(App.tool, 'on_mouse_double_click'):
+            App.tool.on_mouse_double_click(x, y)
+        QGraphicsScene.mouseDoubleClickEvent(self, ev)
 
     def save_state_to_undo_stack(self, name=''):
         self.undo_manager.save_current_state(name)

@@ -110,6 +110,11 @@ class Bond(OasaBond, DrawableObject):
 
     def set_selected(self, select):
         if not self.paper: return
+        if self._selection_item:
+            try: self.paper.removeItem(self._selection_item)
+            except: pass
+            self._selection_item = None
+            
         if select:
             self._selection_item = self.paper.addLine(self.atoms[0].pos + self.atoms[1].pos,
                                     self.line_width + 4, Settings.selection_color)
