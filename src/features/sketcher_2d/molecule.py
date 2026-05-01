@@ -193,11 +193,15 @@ class Molecule(OasaMolecule, DrawableObject):
     def flip_horizontal(self, center_x):
         for a in self.atoms:
             a.x = 2 * center_x - a.x
+        for b in self.bonds:
+            b.flip_horizontal(center_x)
         self.draw()
 
     def flip_vertical(self, center_y):
         for a in self.atoms:
             a.y = 2 * center_y - a.y
+        for b in self.bonds:
+            b.flip_vertical(center_y)
         self.draw()
 
     def get_bond_between_atoms(self, a1, a2):

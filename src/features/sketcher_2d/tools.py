@@ -8,6 +8,7 @@ from .atom import Atom
 from .bond import Bond
 from .arrow import Arrow
 from .text_label import TextLabel
+from src.shared.qt_compat import Qt, QApplication
 from . import geometry as geo
 
 toolsettings = {
@@ -484,6 +485,7 @@ class SelectTool(Tool):
         self.lasso_item = None
         self.rotating = False
         self.right_click_press = None
+        self.is_copying = False
 
     def on_mouse_press(self, x, y):
         self.mouse_press_pos = (x, y)
@@ -631,6 +633,31 @@ class SelectTool(Tool):
 
         if not self._move_targets: return
         
+        # Ctrl + Drag to copy behavior
+        if not self.is_copying and (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
+            # Create clones of current move targets
+            new_targets = []
+            new_objs = []
+            for obj in self._move_targets:
+                if hasattr(obj, 'clone'):
+                    clone = obj.clone()
+                    App.paper.addObject(clone)
+                    clone.draw()
+                    new_targets.append(clone)
+                    new_objs.append(clone)
+                else:
+                    # If it can't be cloned, just move the original
+                    new_targets.append(obj)
+            
+            if new_objs:
+                self._move_targets = new_targets
+                self.objs = new_objs
+                self.is_copying = True
+                # Select the new objects
+                for o in App.paper.objects:
+                    if hasattr(o, 'set_selected'):
+                        o.set_selected(o in self.objs)
+        
         # Move selected objects
         dx = x - self.mouse_press_pos[0]
         dy = y - self.mouse_press_pos[1]
@@ -658,6 +685,7 @@ class SelectTool(Tool):
             self.right_click_press = None
             if self._move_targets:
                 App.paper.save_state_to_undo_stack()
+            self.is_copying = False
             return
         
         if self.selection_rect_item:
@@ -719,6 +747,7 @@ class SelectTool(Tool):
             App.paper.save_state_to_undo_stack()
         self.dragging_curvature = None
         self.mode = "move"
+        self.is_copying = False
 
     def on_key_press(self, key, text):
         focused = App.paper.focused_obj

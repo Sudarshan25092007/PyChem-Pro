@@ -208,18 +208,74 @@ class Bond(OasaBond, DrawableObject):
         self._main_items = [self.paper.addLine(line, 1, self.color) for line in lines]
 
     def _calc_second_line_side(self):
-        line = self.atoms[0].pos + self.atoms[1].pos
-        atms = self.atoms[0].neighbors + self.atoms[1].neighbors
-        atms = [a for a in atms if a not in self.atoms]
-        sides = [geo.line_get_side_of_point(line, a.pos) for a in atms]
-        side = sum(sides)
-        if side == 0: return 0
-        return -1 if side < 0 else 1
+        if not self.atoms or len(self.atoms) < 2:
+            return 0
+        p1 = self.atoms[0].pos
+        p2 = self.atoms[1].pos
+        line = p1 + p2
+        
+        # Collect all neighbors of the two atoms, excluding the atoms of the bond itself.
+        neighbor_atoms = set()
+        for atom in self.atoms:
+            for n in atom.neighbors:
+                if n not in self.atoms:
+                    neighbor_atoms.add(n)
+        
+        if not neighbor_atoms:
+            return 0
+            
+        sides = {}
+        for n in neighbor_atoms:
+            # Use a small threshold to avoid precision issues with side detection
+            s = geo.line_get_side_of_point(line, n.pos, threshold=0.01)
+            if s != 0:
+                sides[n] = s
+                
+        if not sides:
+            return 0
+            
+        left_neighbors = [n for n, s in sides.items() if s == 1]
+        right_neighbors = [n for n, s in sides.items() if s == -1]
+        
+        if len(left_neighbors) > len(right_neighbors):
+            return 1
+        elif len(right_neighbors) > len(left_neighbors):
+            return -1
+        else:
+            # Tie (e.g. fused bond or trans-alkene).
+            # Use canonical tie-break based on atom IDs to ensure stability across flips.
+            if not left_neighbors or not right_neighbors:
+                return 0 # No neighbors on either side that aren't on the line
+            
+            def atom_sort_key(a):
+                try: return int(a.id[1:])
+                except: return a.id
+                
+            min_left = min(atom_sort_key(n) for n in left_neighbors)
+            min_right = min(atom_sort_key(n) for n in right_neighbors)
+            
+            # Prefer the side with the globally "first" atom.
+            # This ensures the double bond stays in the same ring after flipping.
+            return 1 if min_left < min_right else -1
 
     def copy(self):
         new_bond = Bond()
         new_bond.type = self.type
         return new_bond
+
+    def flip_horizontal(self, center_x):
+        if self.second_line_side is not None:
+            if self.auto_second_line_side:
+                self.second_line_side = None
+            else:
+                self.second_line_side *= -1
+
+    def flip_vertical(self, center_y):
+        if self.second_line_side is not None:
+            if self.auto_second_line_side:
+                self.second_line_side = None
+            else:
+                self.second_line_side *= -1
 
 def calc_second_line(bond, mid_line, distance):
     x, y, x0, y0 = geo.line_get_parallel(mid_line, distance)

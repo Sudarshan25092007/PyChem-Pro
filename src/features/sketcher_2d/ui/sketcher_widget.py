@@ -509,15 +509,17 @@ class SketcherWidget(QWidget):
         new_objs = []
         offset = 20
         for obj in App.clipboard:
+            if not hasattr(obj, 'clone'): continue
             new_obj = obj.clone()
+            # Add to paper BEFORE moving or drawing so that paper property is available
+            self.paper.addObject(new_obj)
+            
             if hasattr(new_obj, 'move_by'):
                 new_obj.move_by(offset, offset)
             elif hasattr(new_obj, 'atoms'):
-                # Molecule
                 for a in new_obj.atoms:
                     a.move_by(offset, offset)
             
-            self.paper.addObject(new_obj)
             new_obj.draw()
             new_objs.append(new_obj)
         
@@ -536,6 +538,7 @@ class SketcherWidget(QWidget):
             if hasattr(obj, 'move_by'):
                 obj.move_by(offset, offset)
             elif hasattr(obj, 'atoms'):
+                # Handle molecules that don't have move_by (though they should)
                 for a in obj.atoms:
                     a.move_by(offset, offset)
 

@@ -238,10 +238,14 @@ class Atom(OasaAtom, DrawableObject):
 
     def flip_horizontal(self, center_x):
         self.x = 2 * center_x - self.x
+        for b in self.neighbor_edges:
+            b.flip_horizontal(center_x)
         self.draw()
 
     def flip_vertical(self, center_y):
         self.y = 2 * center_y - self.y
+        for b in self.neighbor_edges:
+            b.flip_vertical(center_y)
         self.draw()
 
     def set_focus(self, focus):
