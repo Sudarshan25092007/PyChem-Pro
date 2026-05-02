@@ -578,18 +578,33 @@ class SelectTool(Tool):
         if not App.paper.dragging: return
         
         if self.rotating and self.right_click_press:
-            # Rotate selected objects with right click
+            # Rotate and Resize selected objects with right click
             if not self._move_targets: return
             obj = self._move_targets[0]
             if not hasattr(obj, 'get_center'): return
             
             center = obj.get_center()
             import math
+            
+            # Rotation
             angle1 = math.atan2(self.right_click_press[1] - center[1], self.right_click_press[0] - center[0])
             angle2 = math.atan2(y - center[1], x - center[0])
             angle = (angle2 - angle1) * 0.4 # Reduced sensitivity
             
-            obj.rotate(angle, center)
+            # Resizing
+            dist1 = math.sqrt((self.right_click_press[0] - center[0])**2 + (self.right_click_press[1] - center[1])**2)
+            dist2 = math.sqrt((x - center[0])**2 + (y - center[1])**2)
+            
+            scale_factor = 1.0
+            if dist1 > 5:
+                scale_factor = dist2 / dist1
+            
+            # Apply transformations
+            if hasattr(obj, 'rotate'):
+                obj.rotate(angle, center)
+            if scale_factor != 1.0 and hasattr(obj, 'scale'):
+                obj.scale(scale_factor, center)
+                
             if hasattr(obj, 'atoms'):
                 for a in obj.atoms:
                     a.on_bond_count_change()
@@ -817,8 +832,8 @@ class ShapeTool(Tool):
         App.paper.addObject(self.current_shape)
         self.current_shape.draw()
 
-    def on_mouse_move(self, x, y, dragging):
-        if dragging and self.p1:
+    def on_mouse_move(self, x, y):
+        if App.paper.dragging and self.p1:
             x1, y1 = self.p1
             # Constraints (Shift for Square/Circle)
             if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
