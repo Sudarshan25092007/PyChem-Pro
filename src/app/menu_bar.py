@@ -301,6 +301,10 @@ def _build_applications_menu(window, menu_bar):
     window.aromaticity_action.triggered.connect(window._perceive_aromaticity_action)
     applications_menu.addAction(window.aromaticity_action)
 
+    window.docking_pose_action = QAction("Molecular Docking Pose in 3D", window)
+    window.docking_pose_action.triggered.connect(window._open_docking_pose_view)
+    applications_menu.addAction(window.docking_pose_action)
+
     applications_menu.addSeparator()
 
     find_substructure_action = QAction("Find &Substructure...", window)
@@ -360,7 +364,7 @@ def _build_applications_menu(window, menu_bar):
     # Disable molecule-dependent actions initially
     for action in (window.opt_menu_actions + window.chg_menu_actions +
                    [window.color_action, window.protein_color_action,
-                    window.aromaticity_action] + window.tools_submenu_actions):
+                    window.aromaticity_action, window.docking_pose_action] + window.tools_submenu_actions):
         action.setEnabled(False)
 
 

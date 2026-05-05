@@ -98,6 +98,15 @@ class MolViewer3D(QWidget):
         self._measure_atoms = []   # List of picked atoms for distance/angle
         self._measurements = []    # List of completed measurements
 
+        # Protein/Ligand display state
+        self.show_ligands_in_cartoon = True
+        self.visible_sidechains = set()  # Set of residue sequence numbers
+        self.interaction_lines = []      # List of (atom1_idx, atom2_idx, type, color)
+        self.labels = {}                 # atom_idx -> text
+
+        # Rendering options
+        self.render_mode = 'ball_and_stick'
+
         # Animation
         self._auto_rotate = False
         self._rotation_timer = QTimer(self)
