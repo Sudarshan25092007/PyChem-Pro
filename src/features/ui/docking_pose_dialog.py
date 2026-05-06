@@ -71,6 +71,28 @@ class DockingPoseDialog(QDialog):
         
         layout.addSpacing(10)
         
+        # Quick Action Buttons
+        layout.addWidget(QLabel("Quick Actions:"))
+        action_layout = QHBoxLayout()
+        
+        self.label_btn = QPushButton("Label Nearby Residues")
+        self.label_btn.clicked.connect(self._on_label_nearby)
+        self.label_btn.setToolTip("Label residues within 5.0 Å of ligand")
+        action_layout.addWidget(self.label_btn)
+        
+        self.clear_labels_btn = QPushButton("Clear Labels")
+        self.clear_labels_btn.clicked.connect(self._on_clear_labels)
+        self.clear_labels_btn.setToolTip("Clear all residue labels")
+        action_layout.addWidget(self.clear_labels_btn)
+        
+        self.zoom_btn = QPushButton("Zoom to Ligand")
+        self.zoom_btn.clicked.connect(self._on_zoom_to_ligand)
+        self.zoom_btn.setToolTip("Zoom to ligand with 7 Å surrounding area")
+        action_layout.addWidget(self.zoom_btn)
+        
+        layout.addLayout(action_layout)
+        layout.addSpacing(10)
+        
         # Buttons
         btn_layout = QHBoxLayout()
         self.apply_btn = QPushButton("Apply View")
@@ -105,6 +127,21 @@ class DockingPoseDialog(QDialog):
         self.save_report_requested = True
         self.accept()
 
+    def _on_label_nearby(self):
+        """Label residues within 5.0 Å of ligand."""
+        self.label_nearby_requested = True
+        self.accept()
+
+    def _on_clear_labels(self):
+        """Clear all residue labels."""
+        self.clear_labels_requested = True
+        self.accept()
+
+    def _on_zoom_to_ligand(self):
+        """Zoom to ligand with 7 Å surrounding area."""
+        self.zoom_to_ligand_requested = True
+        self.accept()
+
     def get_config(self):
         l_idx = self.ligand_combo.currentIndex() if self.ligand_combo else 0
         return {
@@ -113,5 +150,8 @@ class DockingPoseDialog(QDialog):
             'show_hbonds': self.hb_check.isChecked(),
             'show_salt': self.salt_check.isChecked(),
             'show_hydro': self.hydro_check.isChecked(),
-            'save_report': getattr(self, 'save_report_requested', False)
+            'save_report': getattr(self, 'save_report_requested', False),
+            'label_nearby': getattr(self, 'label_nearby_requested', False),
+            'clear_labels': getattr(self, 'clear_labels_requested', False),
+            'zoom_to_ligand': getattr(self, 'zoom_to_ligand_requested', False)
         }

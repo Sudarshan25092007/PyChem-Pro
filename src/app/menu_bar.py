@@ -202,6 +202,11 @@ def _build_view_menu(window, menu_bar):
     bg_color_2d_action.triggered.connect(window._change_2d_bg_color)
     view_menu.addAction(bg_color_2d_action)
 
+    residue_color_action = QAction("Residue Colors...", window)
+    residue_color_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+    residue_color_action.triggered.connect(window._change_residue_colors)
+    view_menu.addAction(residue_color_action)
+
     view_menu.addSeparator()
 
     # ── Theme submenu (Light / Dark / System) ─────────────────
