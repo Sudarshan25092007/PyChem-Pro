@@ -715,64 +715,29 @@ class MainWindow(QMainWindow):
         _viewer.show_protein_color_dialog(self)
 
     def _change_residue_colors(self):
-        """Change residue label colors for residues around ligand."""
-        from PySide6.QtWidgets import QColorDialog, QMessageBox
-        from PySide6.QtCore import Qt
+        """Change residue label settings for residues around ligand."""
+        from src.features.ui.residue_label_settings_dialog import show_residue_label_settings_dialog
         
-        # Show simple color picker dialog like right-click menu
-        color = QColorDialog.getColor(Qt.white, self, "Select Residue Label Color")
-        if not color.isValid():
+        # Show comprehensive residue label settings dialog
+        settings = show_residue_label_settings_dialog(self)
+        
+        if not settings:
             return
-        
-        # Find residues around ligand (within 5.0 Å)
-        nearby_residues = set()
-        
-        # Use current ligand from docking pose or find ligand automatically
-        if hasattr(self.viewer_3d, 'custom_atom_modes') and self.viewer_3d.custom_atom_modes:
-            # Find ligand atoms from custom modes
-            ligand_indices = [idx for idx, mode in self.viewer_3d.custom_atom_modes.items() 
-                            if mode in ('ball_and_stick', 'spacefill')]
-        else:
-            # Find ligand atoms automatically
-            ligand_indices = []
-            if self.viewer_3d.molecule:
-                for atom in self.viewer_3d.molecule.atoms:
-                    if getattr(atom, 'is_hetatm', False):
-                        ligand_indices.append(atom.index)
-        
-        if not ligand_indices:
-            self.status_bar.showMessage("No ligand found - please load a docking pose first", 3000)
-            return
-        
-        # Find residues within 5.0 Å of ligand
-        ligand_coords = []
-        for idx in ligand_indices:
-            if idx < len(self.viewer_3d.molecule.atoms):
-                atom = self.viewer_3d.molecule.atoms[idx]
-                if hasattr(atom, 'has_coords') and atom.has_coords:
-                    ligand_coords.append([atom.x, atom.y, atom.z])
-        
-        if ligand_coords:
-            import numpy as np
-            ligand_center = np.mean(ligand_coords, axis=0)
             
-            for atom in self.viewer_3d.molecule.atoms:
-                if hasattr(atom, 'has_coords') and atom.has_coords:
-                    atom_coord = np.array([atom.x, atom.y, atom.z])
-                    dist = np.linalg.norm(atom_coord - ligand_center)
-                    if dist <= 5.0:  # Within 5.0 Å of ligand
-                        rs = getattr(atom, 'res_seq', None)
-                        if rs is not None:
-                            nearby_residues.add(rs)
+        self.viewer_3d.residue_label_settings = settings
         
-        # Apply color to nearby residues
-        if nearby_residues:
-            for rs in nearby_residues:
-                self.viewer_3d.labeled_residues[rs] = color
+        if not hasattr(self.viewer_3d, 'labeled_residues') or not self.viewer_3d.labeled_residues:
             self.viewer_3d.update()
-            self.status_bar.showMessage(f"Applied label color to {len(nearby_residues)} residues around ligand", 3000)
-        else:
-            self.status_bar.showMessage("No residues found within 5.0 Å of ligand", 3000)
+            return
+
+        color = settings.get('color', Qt.black)
+        count = 0
+        for rs in self.viewer_3d.labeled_residues:
+            self.viewer_3d.labeled_residues[rs] = color
+            count += 1
+            
+        self.viewer_3d.update()
+        self.status_bar.showMessage(f"Updated settings for {count} residue labels", 3000)
 
     def _update_atom_colors(self, colors):
         _viewer.update_atom_colors(self, colors)
@@ -1044,8 +1009,9 @@ class MainWindow(QMainWindow):
         if not self.viewer_3d.molecule or not ligand_indices:
             return
         
-        # Use the existing focus_on_atoms method which handles centering correctly
-        self.viewer_3d.focus_on_atoms(ligand_indices)
+        # Use the existing focus_on_atoms method which handles centering correctly, 
+        # passing the radius to include the surrounding area
+        self.viewer_3d.focus_on_atoms(ligand_indices, padding_angstroms=radius_angstroms)
         self.status_bar.showMessage(f"Zoomed to ligand with {radius_angstroms} Å surrounding area", 3000)
 
     def _save_docking_report(self, service, interactions):

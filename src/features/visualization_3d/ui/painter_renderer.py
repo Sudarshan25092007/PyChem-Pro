@@ -371,14 +371,16 @@ class PainterRenderer:
 
         # Draw specific residue labels dynamically
         if hasattr(v, 'labeled_residues') and v.labeled_residues:
-            for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
-                atom = v.molecule.atoms[atom_idx]
-                rs = getattr(atom, 'res_seq', None)
-                if rs is not None and rs in v.labeled_residues:
-                    if hasattr(atom, 'pdb_name') and atom.pdb_name.strip() == 'CA':
-                        res_name = getattr(atom, 'res_name', 'UNK')
-                        lbl_color = v.labeled_residues[rs]
-                        self._draw_residue_label(v, painter, f"{res_name}{rs}", sx, sy, lbl_color, radius)
+            settings = getattr(v, 'residue_label_settings', {})
+            if settings.get('show_labels', True):
+                for atom_idx, sx, sy, sz, radius, color in sorted_atoms:
+                    atom = v.molecule.atoms[atom_idx]
+                    rs = getattr(atom, 'res_seq', None)
+                    if rs is not None and rs in v.labeled_residues:
+                        if hasattr(atom, 'pdb_name') and atom.pdb_name.strip() == 'CA':
+                            res_name = getattr(atom, 'res_name', 'UNK')
+                            lbl_color = v.labeled_residues[rs]
+                            self._draw_residue_label(v, painter, f"{res_name}{rs}", sx, sy, lbl_color, radius, settings)
 
         # Draw dummy spheres (COM, centroid, custom)
         self._draw_dummy_spheres(v, painter, width, height)
@@ -610,9 +612,10 @@ class PainterRenderer:
         atom = v.molecule.atoms[atom_idx]
         draw_label(painter, atom.symbol, sx, sy, radius, v.label_font_size, getattr(v, '_export_scale', 1.0))
 
-    def _draw_residue_label(self, v, painter, text, sx, sy, color, radius):
+    def _draw_residue_label(self, v, painter, text, sx, sy, color, radius, settings=None):
         from src.features.visualization_3d.services.atom_rendering import draw_residue_label
-        draw_residue_label(painter, text, sx, sy, color, radius, v.label_font_size, getattr(v, '_export_scale', 1.0))
+        settings = settings or getattr(v, 'residue_label_settings', {})
+        draw_residue_label(painter, text, sx, sy, color, radius, v.label_font_size, getattr(v, '_export_scale', 1.0), settings)
 
     def _draw_overlay(self, v, painter):
         from src.features.visualization_3d.services.overlay_rendering import draw_overlay

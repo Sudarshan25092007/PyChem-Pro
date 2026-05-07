@@ -973,13 +973,16 @@ class PythonConsole(QWidget):
             
             # Create labels for CA atoms of selected residues
             labels_count = 0
+            if not hasattr(v, 'labeled_residues'):
+                v.labeled_residues = {}
+                
             for atom in mol.atoms:
                 rs = getattr(atom, 'res_seq', None)
                 if rs is not None and rs in residue_seqs:
                     if hasattr(atom, 'pdb_name') and atom.pdb_name.strip() == 'CA':
-                        res_name = getattr(atom, 'res_name', 'UNK')
-                        v.labels[atom.index] = f"{res_name}{rs}"
-                        labels_count += 1
+                        if rs not in v.labeled_residues:
+                            v.labeled_residues[rs] = QColor(Qt.GlobalColor.black)
+                            labels_count += 1
             
             v.update()
             self._append_output(f"Labeled {labels_count} residues.")
