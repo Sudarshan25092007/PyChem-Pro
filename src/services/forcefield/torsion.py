@@ -111,8 +111,14 @@ class TorsionCalculator:
     def _lookup_params(self, mol, i, j, k, l):
         sym_i = mol.atoms[i].symbol
         sym_l = mol.atoms[l].symbol
-        type_j = f"{mol.atoms[j].symbol}_{mol.atoms[j].hybridization or 'sp3'}"
-        type_k = f"{mol.atoms[k].symbol}_{mol.atoms[k].hybridization or 'sp3'}"
+        
+        # Use specific _aro types for aromatic atoms to match parameters.py
+        suffix_j = "aro" if getattr(mol.atoms[j], 'is_aromatic', False) else (mol.atoms[j].hybridization or 'sp3')
+        suffix_k = "aro" if getattr(mol.atoms[k], 'is_aromatic', False) else (mol.atoms[k].hybridization or 'sp3')
+        
+        type_j = f"{mol.atoms[j].symbol}_{suffix_j}"
+        type_k = f"{mol.atoms[k].symbol}_{suffix_k}"
+        
         params = get_torsion_params(sym_i, type_j, type_k, sym_l)
         # Ensure we always return a valid 3-tuple of floats
         if params is None or not isinstance(params, (list, tuple)) or len(params) != 3:

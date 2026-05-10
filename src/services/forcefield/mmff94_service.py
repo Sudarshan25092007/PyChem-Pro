@@ -17,12 +17,40 @@ from src.core.domain.models.molecule import Molecule
 from src.services.forcefield.hydrogen import HydrogenAdder
 from src.services.forcefield.angle_bending import AngleBendingCalculator
 from src.services.forcefield.torsion import TorsionCalculator
+from src.services.forcefield.out_of_plane import OutOfPlaneCalculator
 from src.services.forcefield.parameters import (
     get_bond_params, get_vdw_params, get_bci_charge, MMFF94_BCI
 )
 
 
 # ─── Module-level worker functions (picklable for spawn mode) ─────
+
+def _elec_energy_chunk(args):
+    """Compute Electrostatic energy for a chunk of pairs."""
+    coords, pairs_chunk = args
+    energy = 0.0
+    for i, j, qi, qj in pairs_chunk:
+        r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
+        # MMFF94 buffered Coulomb: E = 332.0716 * qi * qj / (r + 0.05)
+        energy += 332.0716 * qi * qj / (r + 0.05)
+    return energy
+
+
+def _elec_gradient_chunk(args):
+    """Compute Electrostatic gradient for a chunk of pairs."""
+    coords, pairs_chunk, n_atoms = args
+    grad = np.zeros((n_atoms, 3))
+    for i, j, qi, qj in pairs_chunk:
+        diff = coords[i] - coords[j]
+        r = np.linalg.norm(diff) + 1e-8
+        # Derivative of 332.0716 * qi * qj / (r + 0.05) w.r.t r is
+        # -332.0716 * qi * qj / (r + 0.05)^2
+        force_mag = -332.0716 * qi * qj / ((r + 0.05)**2)
+        direction = diff / r
+        grad[i] += force_mag * direction
+        grad[j] -= force_mag * direction
+    return grad
+
 
 def _vdw_energy_chunk(args):
     """Compute VdW energy for a chunk of pairs."""
@@ -62,6 +90,15 @@ def _vdw_gradient_chunk(args):
     return grad
 
 
+def _optimize_mol_worker(args):
+    """Worker function for batch optimization."""
+    from src.services.forcefield.mmff94_service import MMFF94Service
+    mol, max_iters, convergence, method = args
+    service = MMFF94Service()
+    result = service.optimize_geometry(mol, max_iters, convergence, method)
+    return mol, result
+
+
 class MMFF94Service:
     """
     Complete MMFF94 force field service.
@@ -79,6 +116,7 @@ class MMFF94Service:
         self.h_adder = HydrogenAdder()
         self.angle_calc = AngleBendingCalculator()
         self.torsion_calc = TorsionCalculator()
+        self.oop_calc = OutOfPlaneCalculator()
 
     def add_hydrogens(self, mol: Molecule) -> int:
         return self.h_adder.add_hydrogens(mol)
@@ -135,6 +173,9 @@ class MMFF94Service:
             if a.z is None:
                 z_seed = self._compute_initial_z(a, mol)
                 a.z = z_seed
+        
+        # Tag as seeded from OASA to trigger constrained optimization phase
+        mol._oasa_seeded = True
 
     def _compute_initial_z(self, atom, mol) -> float:
         """Compute an intelligent initial z-coordinate for an atom.
@@ -201,19 +242,23 @@ class MMFF94Service:
         self._seed_coords_from_2d(mol)
         coords = np.array([[a.x, a.y, a.z] for a in mol.atoms], dtype=np.float64)
         mol.assign_hybridization()
+        mol.perceive_aromaticity()
         bond_list = self._build_bond_list(mol)
         angle_list = self.angle_calc.build_angle_list(mol)
         torsion_list = self.torsion_calc.build_torsion_list(mol)
+        oop_list = self.oop_calc.build_oop_list(mol)
         vdw_pairs = self._build_vdw_pairs(mol)
-        return self._total_energy(coords, bond_list, angle_list, torsion_list, vdw_pairs)
+        elec_pairs = self._build_elec_pairs(mol)
+        return self._total_energy(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
 
     def optimize_geometry(self, mol: Molecule, max_iters=500,
                           convergence=1e-4, method='steepest_descent'):
         # 0. Seed 3D coords from OASA 2D layout if missing (SMILES input)
         self._seed_coords_from_2d(mol)
 
-        # 1. Assign hybridization
+        # 1. Assign hybridization and perceive aromaticity
         mol.assign_hybridization()
+        mol.perceive_aromaticity()
 
         # 2. Add hydrogens
         self.h_adder.add_hydrogens(mol)
@@ -225,7 +270,9 @@ class MMFF94Service:
         bond_list = self._build_bond_list(mol)
         angle_list = self.angle_calc.build_angle_list(mol)
         torsion_list = self.torsion_calc.build_torsion_list(mol)
+        oop_list = self.oop_calc.build_oop_list(mol)
         vdw_pairs = self._build_vdw_pairs(mol)
+        elec_pairs = self._build_elec_pairs(mol)
 
         # 5. Get coordinates
         coords = np.array([[a.x, a.y, a.z] for a in mol.atoms], dtype=np.float64)
@@ -234,22 +281,32 @@ class MMFF94Service:
         if np.allclose(coords[:, 2], 0.0, atol=0.01):
             coords[:, 2] += np.random.uniform(-0.1, 0.1, len(coords))
 
-        # 6. Optimize
+        # 6. Constrained Phase: Optimize Z-coordinates only if seeded from OASA
+        # This allows the 3D structure to develop without distorting the 2D layout initially
+        if getattr(mol, '_oasa_seeded', False):
+            coords = self._optimize_z_only(coords, bond_list, angle_list, torsion_list, oop_list,
+                                          vdw_pairs, elec_pairs, max_iters=100)
+
+        # 7. Full Optimization
         if method == 'lbfgs':
             coords, energy_traj, converged, steps = self._lbfgs(
-                coords, bond_list, angle_list, torsion_list, vdw_pairs,
+                coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs,
                 max_iters, convergence)
         else:
             coords, energy_traj, converged, steps = self._steepest_descent(
-                coords, bond_list, angle_list, torsion_list, vdw_pairs,
+                coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs,
                 max_iters, convergence)
+
+        # 6b. Refine Z-coordinates specifically if seeded from OASA
+        # This helps 'pop' the 2D layout into 3D without destroying the 2D skeleton immediately
+        # (Already handled in the constrained phase above)
 
         # 7. Write back coordinates
         for i, atom in enumerate(mol.atoms):
             atom.x, atom.y, atom.z = float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])
 
         final_energy = energy_traj[-1] if energy_traj else 0.0
-        grad = self._total_gradient(coords, bond_list, angle_list, torsion_list, vdw_pairs)
+        grad = self._total_gradient(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
         rms_grad = float(np.sqrt(np.mean(grad ** 2)))
 
         return OptimizationResult(
@@ -260,14 +317,75 @@ class MMFF94Service:
             rms_gradient=rms_grad
         )
 
+    def _optimize_z_only(self, coords, bond_list, angle_list, torsion_list, oop_list,
+                        vdw_pairs, elec_pairs, max_iters=100):
+        """Minimize energy by only varying the Z-coordinates."""
+        step_size = 0.01
+        for step in range(max_iters):
+            grad = self._total_gradient(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
+            # Mask X and Y gradients
+            grad[:, 0] = 0.0
+            grad[:, 1] = 0.0
+            
+            rms_grad_z = float(np.sqrt(np.mean(grad[:, 2] ** 2)))
+            if rms_grad_z < 1e-4:
+                break
+                
+            direction = -grad
+            max_grad = np.max(np.abs(direction))
+            if max_grad > 0:
+                scale = min(step_size, 0.1 / max_grad)
+                new_coords = coords + scale * direction
+                new_energy = self._total_energy(new_coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
+                old_energy = self._total_energy(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
+                
+                if new_energy < old_energy:
+                    coords = new_coords
+                    step_size = min(step_size * 1.2, 0.1)
+                else:
+                    step_size *= 0.5
+            else:
+                break
+            
+            if step_size < 1e-10:
+                break
+        return coords
+
+    def optimize_geometry_batch(self, molecules, max_iters=500,
+                               convergence=1e-4, method='steepest_descent'):
+        """Optimize multiple molecules in parallel."""
+        if not molecules:
+            return []
+        if self.executor is None or len(molecules) == 1:
+            return [self.optimize_geometry(m, max_iters, convergence, method) for m in molecules]
+        
+        args = [(m, max_iters, convergence, method) for m in molecules]
+        results = self.executor.map(_optimize_mol_worker, args)
+        
+        # Results is a list of (mol, result) tuples
+        opt_results = []
+        for i, (opt_mol, res) in enumerate(results):
+            # Sync back atoms (the molecules in the list might be different instances if pickled)
+            # Actually, ProcessPoolExecutor pickles the arguments.
+            # So we need to update the original molecules.
+            orig_mol = molecules[i]
+            for j, atom in enumerate(opt_mol.atoms):
+                orig_mol.atoms[j].x = atom.x
+                orig_mol.atoms[j].y = atom.y
+                orig_mol.atoms[j].z = atom.z
+            opt_results.append(res)
+        return opt_results
+
     # ─── Energy Functions ──────────────────────────────────────
 
-    def _total_energy(self, coords, bond_list, angle_list, torsion_list, vdw_pairs):
+    def _total_energy(self, coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs):
         e = 0.0
         e += self._bond_energy(coords, bond_list)
         e += self.angle_calc.energy(coords, angle_list)
         e += self.torsion_calc.energy(coords, torsion_list)
+        e += self.oop_calc.energy(coords, oop_list)
         e += self._vdw_energy(coords, vdw_pairs)
+        e += self._electrostatic_energy(coords, elec_pairs)
         return e
 
     def _bond_energy(self, coords, bond_list):
@@ -283,21 +401,32 @@ class MMFF94Service:
         return energy
 
     def _vdw_energy_sequential(self, coords, vdw_pairs):
-        energy = 0.0
-        for i, j, sigma, epsilon in vdw_pairs:
-            # Ensure parameters are valid
-            sigma = float(sigma) if sigma is not None else 3.4
-            epsilon = float(epsilon) if epsilon is not None else 0.1
-            if epsilon <= 0:
-                continue
-            r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
-            if r < sigma * 1.5:
-                ratio = sigma / r
-                energy += epsilon * (ratio ** 12 - 2.0 * ratio ** 6)
-        return energy
+        if not vdw_pairs:
+            return 0.0
+        # Vectorized VdW energy
+        i_idx = np.array([p[0] for p in vdw_pairs], dtype=np.int32)
+        j_idx = np.array([p[1] for p in vdw_pairs], dtype=np.int32)
+        sigma = np.array([p[2] for p in vdw_pairs], dtype=np.float64)
+        epsilon = np.array([p[3] for p in vdw_pairs], dtype=np.float64)
+        
+        diff = coords[i_idx] - coords[j_idx]
+        r = np.linalg.norm(diff, axis=1) + 1e-8
+        
+        # Only compute for r < sigma * 1.5
+        mask = r < sigma * 1.5
+        if not np.any(mask):
+            return 0.0
+            
+        r = r[mask]
+        sigma = sigma[mask]
+        epsilon = epsilon[mask]
+        
+        ratio = sigma / r
+        energy = np.sum(epsilon * (ratio ** 12 - 2.0 * ratio ** 6))
+        return float(energy)
 
     def _vdw_energy(self, coords, vdw_pairs):
-        if len(vdw_pairs) < 200 or self.executor is None:
+        if len(vdw_pairs) < 3000 or self.executor is None:
             return self._vdw_energy_sequential(coords, vdw_pairs)
         # Split pairs into chunks for parallel execution
         chunk_size = max(50, len(vdw_pairs) // self.executor.num_workers)
@@ -306,14 +435,40 @@ class MMFF94Service:
         results = self.executor.map(_vdw_energy_chunk, chunks)
         return sum(results)
 
+    def _electrostatic_energy_sequential(self, coords, elec_pairs):
+        if not elec_pairs:
+            return 0.0
+        # Vectorized Electrostatic energy
+        i_idx = np.array([p[0] for p in elec_pairs], dtype=np.int32)
+        j_idx = np.array([p[1] for p in elec_pairs], dtype=np.int32)
+        qi = np.array([p[2] for p in elec_pairs], dtype=np.float64)
+        qj = np.array([p[3] for p in elec_pairs], dtype=np.float64)
+        
+        diff = coords[i_idx] - coords[j_idx]
+        r = np.linalg.norm(diff, axis=1) + 1e-8
+        
+        energy = np.sum(332.0716 * qi * qj / (r + 0.05))
+        return float(energy)
+
+    def _electrostatic_energy(self, coords, elec_pairs):
+        if len(elec_pairs) < 3000 or self.executor is None:
+            return self._electrostatic_energy_sequential(coords, elec_pairs)
+        chunk_size = max(50, len(elec_pairs) // self.executor.num_workers)
+        chunks = [(coords, elec_pairs[i:i + chunk_size])
+                  for i in range(0, len(elec_pairs), chunk_size)]
+        results = self.executor.map(_elec_energy_chunk, chunks)
+        return sum(results)
+
     # ─── Gradient Functions ────────────────────────────────────
 
-    def _total_gradient(self, coords, bond_list, angle_list, torsion_list, vdw_pairs):
+    def _total_gradient(self, coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs):
         grad = np.zeros_like(coords)
         grad += self._bond_gradient(coords, bond_list)
         grad += self.angle_calc.gradient(coords, angle_list)
         grad += self.torsion_calc.gradient(coords, torsion_list)
+        grad += self.oop_calc.gradient(coords, oop_list)
         grad += self._vdw_gradient(coords, vdw_pairs)
+        grad += self._electrostatic_gradient(coords, elec_pairs)
         return grad
 
     def _bond_gradient(self, coords, bond_list):
@@ -333,24 +488,40 @@ class MMFF94Service:
 
     def _vdw_gradient_sequential(self, coords, vdw_pairs):
         grad = np.zeros_like(coords)
-        for i, j, sigma, epsilon in vdw_pairs:
-            # Ensure parameters are valid
-            sigma = float(sigma) if sigma is not None else 3.4
-            epsilon = float(epsilon) if epsilon is not None else 0.1
-            if epsilon <= 0:
-                continue
-            diff = coords[i] - coords[j]
-            r = np.linalg.norm(diff) + 1e-8
-            if r < sigma * 1.5:
-                ratio = sigma / r
-                force_mag = epsilon * (-12.0 * ratio**12 / r + 12.0 * ratio**6 / r)
-                direction = diff / r
-                grad[i] += force_mag * direction
-                grad[j] -= force_mag * direction
+        if not vdw_pairs:
+            return grad
+            
+        i_idx = np.array([p[0] for p in vdw_pairs], dtype=np.int32)
+        j_idx = np.array([p[1] for p in vdw_pairs], dtype=np.int32)
+        sigma = np.array([p[2] for p in vdw_pairs], dtype=np.float64)
+        epsilon = np.array([p[3] for p in vdw_pairs], dtype=np.float64)
+        
+        diff = coords[i_idx] - coords[j_idx]
+        r = np.linalg.norm(diff, axis=1) + 1e-8
+        
+        mask = r < sigma * 1.5
+        if not np.any(mask):
+            return grad
+            
+        r = r[mask]
+        diff = diff[mask]
+        sigma = sigma[mask]
+        epsilon = epsilon[mask]
+        i_m = i_idx[mask]
+        j_m = j_idx[mask]
+        
+        ratio = sigma / r
+        force_mag = (epsilon * (-12.0 * ratio**12 / r + 12.0 * ratio**6 / r)).reshape(-1, 1)
+        direction = diff / r.reshape(-1, 1)
+        
+        # Accumulate forces
+        forces = force_mag * direction
+        np.add.at(grad, i_m, forces)
+        np.add.at(grad, j_m, -forces)
         return grad
 
     def _vdw_gradient(self, coords, vdw_pairs):
-        if len(vdw_pairs) < 200 or self.executor is None:
+        if len(vdw_pairs) < 3000 or self.executor is None:
             return self._vdw_gradient_sequential(coords, vdw_pairs)
         # Split pairs into chunks for parallel execution
         n_atoms = coords.shape[0]
@@ -359,6 +530,40 @@ class MMFF94Service:
                   for i in range(0, len(vdw_pairs), chunk_size)]
         results = self.executor.map(_vdw_gradient_chunk, chunks)
         # Sum partial gradients from all chunks
+        grad = np.zeros_like(coords)
+        for partial_grad in results:
+            grad += partial_grad
+        return grad
+
+    def _electrostatic_gradient_sequential(self, coords, elec_pairs):
+        grad = np.zeros_like(coords)
+        if not elec_pairs:
+            return grad
+            
+        i_idx = np.array([p[0] for p in elec_pairs], dtype=np.int32)
+        j_idx = np.array([p[1] for p in elec_pairs], dtype=np.int32)
+        qi = np.array([p[2] for p in elec_pairs], dtype=np.float64)
+        qj = np.array([p[3] for p in elec_pairs], dtype=np.float64)
+        
+        diff = coords[i_idx] - coords[j_idx]
+        r = np.linalg.norm(diff, axis=1) + 1e-8
+        
+        force_mag = (-332.0716 * qi * qj / ((r + 0.05)**2)).reshape(-1, 1)
+        direction = diff / r.reshape(-1, 1)
+        
+        forces = force_mag * direction
+        np.add.at(grad, i_idx, forces)
+        np.add.at(grad, j_idx, -forces)
+        return grad
+
+    def _electrostatic_gradient(self, coords, elec_pairs):
+        if len(elec_pairs) < 3000 or self.executor is None:
+            return self._electrostatic_gradient_sequential(coords, elec_pairs)
+        n_atoms = coords.shape[0]
+        chunk_size = max(50, len(elec_pairs) // self.executor.num_workers)
+        chunks = [(coords, elec_pairs[i:i + chunk_size], n_atoms)
+                  for i in range(0, len(elec_pairs), chunk_size)]
+        results = self.executor.map(_elec_gradient_chunk, chunks)
         grad = np.zeros_like(coords)
         for partial_grad in results:
             grad += partial_grad
@@ -433,16 +638,43 @@ class MMFF94Service:
                     vdw_pairs.append((i, j, sigma, epsilon))
         return vdw_pairs
 
+    def _build_elec_pairs(self, mol):
+        """Build list of pairs for electrostatic interactions (1-4 and higher)."""
+        n = len(mol.atoms)
+        # Exclude 1-2 and 1-3 pairs (same as VdW)
+        excluded = set()
+        for bond in mol.bonds:
+            pair = (min(bond.begin_atom_idx, bond.end_atom_idx),
+                    max(bond.begin_atom_idx, bond.end_atom_idx))
+            excluded.add(pair)
+        for atom in mol.atoms:
+            neighbors = mol.get_neighbors(atom.index)
+            for a in range(len(neighbors)):
+                for b in range(a + 1, len(neighbors)):
+                    pair = (min(neighbors[a], neighbors[b]),
+                            max(neighbors[a], neighbors[b]))
+                    excluded.add(pair)
+
+        elec_pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                if (i, j) not in excluded:
+                    qi = getattr(mol.atoms[i], 'partial_charge', 0.0)
+                    qj = getattr(mol.atoms[j], 'partial_charge', 0.0)
+                    if abs(qi) > 1e-6 or abs(qj) > 1e-6:
+                        elec_pairs.append((i, j, float(qi), float(qj)))
+        return elec_pairs
+
     # ─── Optimizers ────────────────────────────────────────────
 
-    def _steepest_descent(self, coords, bond_list, angle_list, torsion_list,
-                          vdw_pairs, max_iters, convergence):
+    def _steepest_descent(self, coords, bond_list, angle_list, torsion_list, oop_list,
+                          vdw_pairs, elec_pairs, max_iters, convergence):
         step_size = 0.01
-        energy = self._total_energy(coords, bond_list, angle_list, torsion_list, vdw_pairs)
+        energy = self._total_energy(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
         energy_traj = [float(energy)]
 
         for step in range(max_iters):
-            grad = self._total_gradient(coords, bond_list, angle_list, torsion_list, vdw_pairs)
+            grad = self._total_gradient(coords, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
             rms_grad = float(np.sqrt(np.mean(grad ** 2)))
 
             if rms_grad < convergence:
@@ -457,7 +689,7 @@ class MMFF94Service:
 
             new_coords = coords + scale * direction
             new_energy = self._total_energy(new_coords, bond_list, angle_list,
-                                            torsion_list, vdw_pairs)
+                                            torsion_list, oop_list, vdw_pairs, elec_pairs)
 
             if new_energy < energy:
                 coords = new_coords
@@ -472,17 +704,17 @@ class MMFF94Service:
 
         return coords, energy_traj, False, max_iters
 
-    def _lbfgs(self, coords, bond_list, angle_list, torsion_list,
-               vdw_pairs, max_iters, convergence, m=10):
+    def _lbfgs(self, coords, bond_list, angle_list, torsion_list, oop_list,
+               vdw_pairs, elec_pairs, max_iters, convergence, m=10):
         flat = coords.flatten()
 
         def energy_fn(x):
             c = x.reshape(-1, 3)
-            return self._total_energy(c, bond_list, angle_list, torsion_list, vdw_pairs)
+            return self._total_energy(c, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs)
 
         def grad_fn(x):
             c = x.reshape(-1, 3)
-            return self._total_gradient(c, bond_list, angle_list, torsion_list, vdw_pairs).flatten()
+            return self._total_gradient(c, bond_list, angle_list, torsion_list, oop_list, vdw_pairs, elec_pairs).flatten()
 
         s_list, y_list, rho_list = [], [], []
         energy = energy_fn(flat)

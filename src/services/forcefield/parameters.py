@@ -42,6 +42,11 @@ MMFF94_BOND = {
     ('S', 'H', 1): (1.34, 4.0),
     ('P', 'H', 1): (1.42, 3.5),
     ('P', 'P', 1): (2.21, 2.0),
+    # Added Halogens and common organic bonds
+    ('N', 'O', 1.5): (1.23, 9.0), # Nitro group N=O
+    ('C', 'N', 3): (1.16, 14.0),  # Nitrile C#N
+    ('S', 'O', 2): (1.43, 10.0),  # Sulfone S=O
+    ('P', 'O', 2): (1.48, 9.0),   # Phosphine oxide P=O
 }
 
 # ─── Angle Bending ─────────────────────────────────────────────
@@ -89,6 +94,11 @@ MMFF94_ANGLE = {
     ('H', 'S', 'H', 'sp3'): (92.0, 0.4),
     ('O', 'P', 'O', 'sp3'): (109.5, 0.8),
     ('C', 'P', 'C', 'sp3'): (109.5, 0.6),
+    # Added parameters
+    ('C', 'N', 'O', 'sp2'): (120.0, 1.0),
+    ('O', 'N', 'O', 'sp2'): (120.0, 1.2),
+    ('C', 'C', 'Cl', 'sp2'): (120.0, 0.7),
+    ('C', 'C', 'F', 'sp2'): (120.0, 0.8),
 }
 
 # ─── Torsion/Dihedral ─────────────────────────────────────────
@@ -112,10 +122,25 @@ MMFF94_TORSION = {
     ('H', 'C_sp3', 'O_sp3', 'H'): (0.0, 0.0, 0.4),
     ('H', 'C_sp3', 'O_sp3', 'C'): (0.0, 0.0, 0.4),
     ('C', 'C_sp3', 'N_sp3', 'H'): (0.0, 0.0, 0.3),
-    ('H', 'C_sp3', 'N_sp3', 'H'): (0.0, 0.0, 0.25),
+    ('H', 'C_sp3', 'S_sp3', 'H'): (0.0, 0.0, 0.25),
     ('C', 'C_sp3', 'N_sp3', 'C'): (0.0, 0.0, 0.5),
     ('*', 'C_sp3', 'S_sp3', '*'): (0.0, 0.0, 0.3),
     ('H', 'C_sp3', 'S_sp3', 'H'): (0.0, 0.0, 0.25),
+    # Aromatic ring torsions
+    ('*', 'C_aro', 'C_aro', '*'): (0.0, 10.0, 0.0),
+    ('*', 'C_aro', 'N_aro', '*'): (0.0, 10.0, 0.0),
+    ('*', 'N_aro', 'N_aro', '*'): (0.0, 10.0, 0.0),
+}
+
+# ─── Out-of-Plane Bending ──────────────────────────────────────
+# Key: (sym_center, sym_i, sym_j, sym_k) -> koop
+MMFF94_OOP = {
+    ('C', 'C', 'C', 'C'): 0.05,
+    ('C', 'C', 'C', 'H'): 0.04,
+    ('C', 'C', 'H', 'H'): 0.03,
+    ('N', 'C', 'C', 'C'): 0.05,
+    ('C', 'N', 'C', 'C'): 0.04,
+    ('C', 'C', 'C', 'N'): 0.05,
 }
 
 # ─── Van der Waals ─────────────────────────────────────────────
@@ -178,3 +203,8 @@ def get_bci_charge(sym1, sym2):
     rev_pair = (sym2, sym1)
     if rev_pair in MMFF94_BCI: return -MMFF94_BCI[rev_pair]
     return 0.0
+
+def get_oop_params(sym_center, neighbors):
+    """Find OOP force constant."""
+    # Heuristic fallback for missing parameters
+    return 0.05
