@@ -259,32 +259,45 @@ class ArraysBuilder:
         oop_k = np.asarray(ok, dtype=np.int32)
         oop_koop = np.asarray(okk, dtype=np.float64)
 
-        # ── VdW + ES (small-N, N² minus exclusions) ──
+        # ── VdW + ES — small-N path or cell-list ──
+        N_CELL_THRESHOLD = 200
+        if n_atoms < N_CELL_THRESHOLD:
+            candidate_pairs = [
+                (i, j)
+                for i in range(n_atoms)
+                for j in range(i + 1, n_atoms)
+            ]
+        else:
+            from src.services.forcefield._engine.neighbor_list import (
+                build_neighbor_pairs, VDW_CUTOFF, ES_CUTOFF,
+            )
+            coords = np.array([[a.x, a.y, a.z] for a in mol.atoms],
+                              dtype=np.float64)
+            # Use the larger cutoff (ES) for the candidate list; filter
+            # by VdW cutoff within the inner branch.
+            candidate_arr = build_neighbor_pairs(coords, ES_CUTOFF)
+            candidate_pairs = [tuple(p) for p in candidate_arr]
+
         vdw_data = []
         es_data = []
-        for i in range(n_atoms):
-            for j in range(i + 1, n_atoms):
-                pair = frozenset({i, j})
-                if pair in excl.pairs_12 or pair in excl.pairs_13:
-                    continue
-                ti = mol.atoms[i].mmff_type
-                tj = mol.atoms[j].mmff_type
-
-                # VdW: needs both atoms typed for combining rule
-                if ti != 0 and tj != 0:
-                    vp_i = get_vdw_params(ti)
-                    vp_j = get_vdw_params(tj)
-                    if vp_i is not None and vp_j is not None:
-                        rs, eps = _combine_vdw(vp_i, vp_j)
-                        if eps > 0:
-                            vdw_data.append((i, j, rs, eps))
-
-                # ES: needs non-zero charges on both
-                qi = mol.atoms[i].partial_charge
-                qj = mol.atoms[j].partial_charge
-                if abs(qi) > 1e-6 and abs(qj) > 1e-6:
-                    f = _ES_FACTOR_14 if pair in excl.pairs_14 else _ES_FACTOR_15PLUS
-                    es_data.append((i, j, qi * qj, f))
+        for i, j in candidate_pairs:
+            pair = frozenset({i, j})
+            if pair in excl.pairs_12 or pair in excl.pairs_13:
+                continue
+            ti = mol.atoms[i].mmff_type
+            tj = mol.atoms[j].mmff_type
+            if ti != 0 and tj != 0:
+                vp_i = get_vdw_params(ti)
+                vp_j = get_vdw_params(tj)
+                if vp_i is not None and vp_j is not None:
+                    rs, eps = _combine_vdw(vp_i, vp_j)
+                    if eps > 0:
+                        vdw_data.append((i, j, rs, eps))
+            qi = mol.atoms[i].partial_charge
+            qj = mol.atoms[j].partial_charge
+            if abs(qi) > 1e-6 and abs(qj) > 1e-6:
+                f = _ES_FACTOR_14 if pair in excl.pairs_14 else _ES_FACTOR_15PLUS
+                es_data.append((i, j, qi * qj, f))
 
         if vdw_data:
             vi, vj, vrs, veps = zip(*vdw_data)
