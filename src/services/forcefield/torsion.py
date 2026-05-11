@@ -5,7 +5,7 @@ E_torsion = 0.5 * [V1*(1-cos(phi)) + V2*(1-cos(2*phi)) + V3*(1-cos(3*phi))]
 """
 import numpy as np
 from src.core.domain.models.molecule import Molecule
-from src.services.forcefield.parameters import get_torsion_params
+from src.services.forcefield.parameters_legacy import get_torsion_params
 
 
 class TorsionCalculator:

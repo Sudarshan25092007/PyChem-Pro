@@ -7,7 +7,7 @@ where cb = -0.007 (cubic stretch correction)
 import math
 import numpy as np
 from src.core.domain.models.molecule import Molecule
-from src.services.forcefield.parameters import get_angle_params
+from src.services.forcefield.parameters_legacy import get_angle_params
 
 class AngleBendingCalculator:
     CB = -0.007

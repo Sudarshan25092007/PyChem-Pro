@@ -18,7 +18,7 @@ from src.services.forcefield.hydrogen import HydrogenAdder
 from src.services.forcefield.angle_bending import AngleBendingCalculator
 from src.services.forcefield.torsion import TorsionCalculator
 from src.services.forcefield.out_of_plane import OutOfPlaneCalculator
-from src.services.forcefield.parameters import (
+from src.services.forcefield.parameters_legacy import (
     get_bond_params, get_vdw_params, get_bci_charge, MMFF94_BCI
 )
 

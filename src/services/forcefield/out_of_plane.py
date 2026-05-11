@@ -6,7 +6,7 @@ where d is the distance of the central atom from the plane of its 3 neighbors.
 """
 import numpy as np
 from src.core.domain.models.molecule import Molecule
-from src.services.forcefield.parameters import get_oop_params
+from src.services.forcefield.parameters_legacy import get_oop_params
 
 class OutOfPlaneCalculator:
     
