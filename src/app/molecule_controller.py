@@ -304,6 +304,14 @@ def show_substructure_dialog(window):
 # ── Plugins ──────────────────────────────────────────────────────
 
 def notify_plugins_molecule_changed(window):
-    """Notify all plugins that the molecule has changed."""
-    if window.plugin_interface and window.plugin_interface.plugin_manager:
-        window.plugin_interface.plugin_manager.set_current_molecule(window.molecule)
+    """Notify all plugins that the molecule has changed.
+
+    Goes directly to ``window.plugin_manager`` (set in MainWindow.__init__).
+    The previous code referenced ``window.plugin_interface.plugin_manager``,
+    but that attribute name was never set on MainWindow — the plugin manager
+    lives on ``window.plugin_manager`` and the UI widget on
+    ``window.enhanced_plugin_interface``.
+    """
+    plugin_manager = getattr(window, 'plugin_manager', None)
+    if plugin_manager is not None:
+        plugin_manager.set_current_molecule(window.molecule)
