@@ -20,6 +20,7 @@ from src.services.forcefield.torsion import TorsionCalculator
 from src.services.forcefield.parameters import (
     get_bond_params, get_vdw_params, get_bci_charge, MMFF94_BCI
 )
+from src.core.math_utils import calculate_distance
 
 
 # ─── Module-level worker functions (picklable for spawn mode) ─────
@@ -34,7 +35,7 @@ def _vdw_energy_chunk(args):
         epsilon = float(epsilon) if epsilon is not None else 0.1
         if epsilon <= 0:
             continue
-        r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
+        r = calculate_distance(coords[i], coords[j])
         if r < sigma * 1.5:
             ratio = sigma / r
             energy += epsilon * (ratio ** 12 - 2.0 * ratio ** 6)
@@ -52,7 +53,7 @@ def _vdw_gradient_chunk(args):
         if epsilon <= 0:
             continue
         diff = coords[i] - coords[j]
-        r = np.linalg.norm(diff) + 1e-8
+        r = calculate_distance(coords[i], coords[j])
         if r < sigma * 1.5:
             ratio = sigma / r
             force_mag = epsilon * (-12.0 * ratio**12 / r + 12.0 * ratio**6 / r)
@@ -278,7 +279,7 @@ class MMFF94Service:
             kb = float(kb) if kb is not None else 4.0
             if kb <= 0:
                 continue
-            r = np.linalg.norm(coords[i] - coords[j])
+            r = calculate_distance(coords[i], coords[j])
             energy += 71.94 / 2.0 * kb * (r - r0) ** 2
         return energy
 
@@ -290,7 +291,7 @@ class MMFF94Service:
             epsilon = float(epsilon) if epsilon is not None else 0.1
             if epsilon <= 0:
                 continue
-            r = np.linalg.norm(coords[i] - coords[j]) + 1e-8
+            r = calculate_distance(coords[i], coords[j])
             if r < sigma * 1.5:
                 ratio = sigma / r
                 energy += epsilon * (ratio ** 12 - 2.0 * ratio ** 6)
@@ -325,7 +326,7 @@ class MMFF94Service:
             if kb <= 0:
                 continue
             diff = coords[i] - coords[j]
-            r = np.linalg.norm(diff) + 1e-8
+            r = calculate_distance(coords[i], coords[j])
             force = 71.94 * kb * (r - r0) / r
             grad[i] += force * diff / r
             grad[j] -= force * diff / r
@@ -340,7 +341,7 @@ class MMFF94Service:
             if epsilon <= 0:
                 continue
             diff = coords[i] - coords[j]
-            r = np.linalg.norm(diff) + 1e-8
+            r = calculate_distance(coords[i], coords[j])
             if r < sigma * 1.5:
                 ratio = sigma / r
                 force_mag = epsilon * (-12.0 * ratio**12 / r + 12.0 * ratio**6 / r)
