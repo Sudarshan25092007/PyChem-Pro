@@ -770,6 +770,17 @@ class MainWindow(QMainWindow):
     def _copy_smiles_to_clipboard(self):
         _chem.copy_smiles_to_clipboard(self)
 
+    # ── Lipophilicity Actions ─────────────────────────────────────
+
+    def _calculate_logp_action(self):
+        _chem.calculate_logp_action(self)
+
+    def _show_lipophilic_contributions(self):
+        _chem.show_lipophilic_contributions(self)
+
+    def _color_by_lipophilicity(self):
+        _chem.color_by_lipophilicity(self)
+
     # ── Viewer coordinator delegates ─────────────────────────────
 
     def _toggle_hydrogens(self):

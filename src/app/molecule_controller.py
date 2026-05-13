@@ -12,6 +12,7 @@ from src.shared.qt_compat import (
 )
 from src.core.performance import get_profiler, profile_operation
 from src.features.ui.substructure_dialog import SubstructureDialog
+from src.app import viewer_coordinator as _viewer
 
 _DEBUG = False
 
@@ -40,6 +41,8 @@ def connect_signals(window):
     # View options
     window.input_panel.show_h_check.toggled.connect(window._toggle_hydrogens)
     window.input_panel.show_labels_check.toggled.connect(window._toggle_labels)
+    window.input_panel.label_color_btn.clicked.connect(lambda: _viewer.change_label_color(window))
+    window.input_panel.clear_labels_btn.clicked.connect(lambda: _viewer.clear_labels(window))
     window.input_panel.show_sidechains_check.toggled.connect(window._toggle_sidechains)
     window.input_panel.show_sasa_check.toggled.connect(window._toggle_sasa)
     window.input_panel.sasa_selected_only_check.toggled.connect(window._toggle_sasa_selected_only)
@@ -195,6 +198,11 @@ def set_molecule(window, molecule):
         window.docking_pose_action.setEnabled(True)
     for action in window.tools_submenu_actions:
         action.setEnabled(True)
+    
+    # Enable Lipophilicity actions
+    if hasattr(window, '_lipo_menu_actions'):
+        for action in window._lipo_menu_actions:
+            action.setEnabled(True)
     
     # Enable Copy as Image action
     if hasattr(window, '_copy_image_action'):
