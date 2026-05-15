@@ -533,11 +533,16 @@ def render_protein_cartoon(painter, molecule: Molecule,
     t0_total = time.time()
     
     # Antialiasing scale factor for smooth rendering
-    scale_factor = 1 if is_interacting else 2  # 2x supersampling for static view
+    from src.core.hardware_profiler import HardwareProfiler
+    _hw = HardwareProfiler()
+    if _hw.is_high_end:
+        scale_factor = 2  # Always 2x supersampling on high-end
+    else:
+        scale_factor = 1 if is_interacting else 2  # Drop during interaction on low-end
     
     # EARLY CACHE CHECK — skip ALL math if camera hasn't changed
     cache_key = (id(molecule), round(rot_x, 4), round(rot_y, 4), round(rot_z, 4),
-                 round(pan_x, 2), round(pan_y, 2), round(zoom, 4),
+                 round(pan_x, 2), round(pan_y, 2), round(zoom, 4), scale_factor,
                  width, height, is_interacting)
     
     if hasattr(render_protein_cartoon, '_img_cache') and \
@@ -546,278 +551,176 @@ def render_protein_cartoon(painter, molecule: Molecule,
         return
     
     # 1. Get the cached 3D mesh with higher quality for smooth rendering
-    current_steps = 3 if is_interacting else 24  # Reduced for fast interaction
-    current_profile = 4 if is_interacting else 16  # Reduced for fast interaction
+    if _hw.is_high_end:
+        current_steps = 24   # Always high quality on high-end
+        current_profile = 16
+    else:
+        current_steps = 3 if is_interacting else 24   # Drop during interaction on low-end
+        current_profile = 4 if is_interacting else 16
     
     t0_mesh = time.time()
     vertices, triangles, colors = _cartoon_gen.get_mesh(molecule, spline_steps=current_steps, profile_detail=current_profile)
     
     if vertices is None or len(vertices) == 0:
         return
-    
-    num_verts = len(vertices)
-    num_tri = len(triangles)
-    
-    # 2. Vectorized 3D -> 2D projection
-    cos_x = math.cos(math.radians(rot_x))
-    sin_x = math.sin(math.radians(rot_x))
-    cos_y = math.cos(math.radians(rot_y))
-    sin_y = math.sin(math.radians(rot_y))
-    cos_z = math.cos(math.radians(rot_z))
-    sin_z = math.sin(math.radians(rot_z))
-    cx = width / 2.0 + pan_x
-    cy = height / 2.0 + pan_y
-    
-    vx = vertices[:, 0] * zoom
-    vy = vertices[:, 1] * zoom
-    vz = vertices[:, 2] * zoom
-    
-    # Rotate Y then X
-    rx_tmp = vx * cos_y + vz * sin_y
-    rz = -vx * sin_y + vz * cos_y
-    ry_tmp = vy * cos_x - rz * sin_x
-    rz2 = vy * sin_x + rz * cos_x
-    
-    # Rotate Z
-    rx = rx_tmp * cos_z - ry_tmp * sin_z
-    ry = rx_tmp * sin_z + ry_tmp * cos_z
-    
-    sx = cx + rx       # screen x
-    sy = cy - ry       # screen y (inverted)
-    
-    # 3. Compute face normals in rotated space (vectorized)
-    t0 = triangles[:, 0]
-    t1 = triangles[:, 1]
-    t2 = triangles[:, 2]
-    
-    # Edge vectors
-    e1x = rx[t1] - rx[t0]
-    e1y = ry[t1] - ry[t0]
-    e1z = rz2[t1] - rz2[t0]
-    e2x = rx[t2] - rx[t0]
-    e2y = ry[t2] - ry[t0]
-    e2z = rz2[t2] - rz2[t0]
-    
-    # Cross product for face normals
-    fnx = e1y * e2z - e1z * e2y
-    fny = e1z * e2x - e1x * e2z
-    fnz = e1x * e2y - e1y * e2x
-    
-    # Normalize face normals
-    fnlen = np.sqrt(fnx*fnx + fny*fny + fnz*fnz)
-    valid = fnlen > 1e-8
-    fnx[valid] /= fnlen[valid]
-    fny[valid] /= fnlen[valid]
-    fnz[valid] /= fnlen[valid]
-    
-    # 4. Back-face culling: skip triangles facing away from viewer
-    front_facing = fnz < 0.0
-    
-    # ── Gouraud Normal Smoothing ──────────────────────────────────────
-    # Accumulate face normals into per-vertex normals, then shade per vertex
-    # instead of per face.  This eliminates the flat-shading facet artefact
-    # that becomes visible at very high zoom levels.
-    if use_gouraud:
-        # Accumulate face normals into vertex normals
-        vnx = np.zeros(num_verts, dtype=np.float64)
-        vny = np.zeros(num_verts, dtype=np.float64)
-        vnz = np.zeros(num_verts, dtype=np.float64)
         
-        # Only accumulate from front-facing triangles
-        ff_mask = front_facing & valid
-        np.add.at(vnx, t0[ff_mask], fnx[ff_mask])
-        np.add.at(vnx, t1[ff_mask], fnx[ff_mask])
-        np.add.at(vnx, t2[ff_mask], fnx[ff_mask])
-        np.add.at(vny, t0[ff_mask], fny[ff_mask])
-        np.add.at(vny, t1[ff_mask], fny[ff_mask])
-        np.add.at(vny, t2[ff_mask], fny[ff_mask])
-        np.add.at(vnz, t0[ff_mask], fnz[ff_mask])
-        np.add.at(vnz, t1[ff_mask], fnz[ff_mask])
-        np.add.at(vnz, t2[ff_mask], fnz[ff_mask])
-        
-        # Normalize vertex normals
-        vnlen = np.sqrt(vnx*vnx + vny*vny + vnz*vnz)
-        vn_valid = vnlen > 1e-8
-        vnx[vn_valid] /= vnlen[vn_valid]
-        vny[vn_valid] /= vnlen[vn_valid]
-        vnz[vn_valid] /= vnlen[vn_valid]
-        
-        # Use averaged vertex normals per triangle (average of 3 vertices)
-        nx = (vnx[t0] + vnx[t1] + vnx[t2]) / 3.0
-        ny = (vny[t0] + vny[t1] + vny[t2]) / 3.0
-        nz = (vnz[t0] + vnz[t1] + vnz[t2]) / 3.0
-        # Re-normalize
-        nlen2 = np.sqrt(nx*nx + ny*ny + nz*nz)
-        nv = nlen2 > 1e-8
-        nx[nv] /= nlen2[nv]
-        ny[nv] /= nlen2[nv]
-        nz[nv] /= nlen2[nv]
-    else:
-        # Flat shading — use face normals directly
-        nx, ny, nz = fnx, fny, fnz
-    
-    # 5. Z-sort only front-facing triangles (back-to-front)
-    tri_z = (rz2[t0] + rz2[t1] + rz2[t2]) / 3.0
-    # Set back-facing triangles to -inf so they sort to the end
-    tri_z[~front_facing] = -1e9
-    sort_indices = np.argsort(tri_z)[::-1]
-    
-    # 6. Vectorized shading computation (Lambertian + Blinn-Phong specular)
-    lx, ly, lz = 0.3, -0.6, -0.7
-    ll = math.sqrt(lx*lx + ly*ly + lz*lz)
-    lx /= ll; ly /= ll; lz /= ll
-    
-    # Diffuse: dot(normal, light)
-    dot_nl = nx * lx + ny * ly + nz * lz
-    diffuse = np.clip(dot_nl, 0.0, 1.0)
-    
-    # Specular (Blinn-Phong): halfway vector between light and view
-    hx = lx
-    hy = ly
-    hz = lz - 1.0
-    hl = math.sqrt(hx*hx + hy*hy + hz*hz)
-    hx /= hl; hy /= hl; hz /= hl
-    
-    dot_nh = nx * hx + ny * hy + nz * hz
-    specular = np.clip(dot_nh, 0.0, 1.0) ** 16 * 0.15
-    
-    ambient = 0.35
-    
-    if use_ssao and np.any(front_facing):
-        z_min = np.min(tri_z[front_facing])
-        z_max = np.max(tri_z[front_facing])
-        z_range = max(1e-5, z_max - z_min)
-        z_norm = (tri_z - z_min) / z_range
-        
-        ambient = 0.45 * (1.0 - z_norm * 0.8)
-        rim = (1.0 - np.abs(nz)) ** 2.5
-        shade = np.clip(ambient + diffuse * 0.65 + specular + rim * 0.35, 0.0, 1.2)
-    else:
-        shade = np.clip(ambient + diffuse * 0.65 + specular, 0.0, 1.2)
-    
-    # Per-triangle base color (from first vertex)
-    tri_colors = colors[t0]  # shape (num_tri, 3)
-    
-    # Per-triangle final shaded color
-    final_r = np.clip((tri_colors[:, 0] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
-    final_g = np.clip((tri_colors[:, 1] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
-    final_b = np.clip((tri_colors[:, 2] * shade + specular * 0.3) * 255, 0, 255).astype(np.uint8)
-    
-    t0_draw = time.time()
-    
-    # 7. CHUNKED Vectorized Rasterizer (memory-safe for 8GB RAM)
-    active_indices = sort_indices[front_facing[sort_indices]]
-    if len(active_indices) == 0:
-        return
+    print(f"[Performance] Mesh generation took {time.time()-t0_mesh:.3f}s for {len(vertices)} vertices")
 
-    N = len(active_indices)
-    tri_act = triangles[active_indices]
+    t0_transform = time.time()
+    # 2. Apply camera transformations (match MolViewer3D order: Ry then Rx then Rz)
+    v_centered = vertices # Do NOT shift by center, align with raw atom coordinates
     
-    # Screen coords per triangle vertex (no scaling here)
-    t_ax = sx[tri_act[:, 0]]; t_ay = sy[tri_act[:, 0]]
-    t_bx = sx[tri_act[:, 1]]; t_by = sy[tri_act[:, 1]]
-    t_cx = sx[tri_act[:, 2]]; t_cy = sy[tri_act[:, 2]]
+    # Apply rotation
+    from math import sin, cos, radians
+    rad_x, rad_y, rad_z = radians(rot_x), radians(rot_y), radians(rot_z)
+    cx, sx = cos(rad_x), sin(rad_x)
+    cy, sy = cos(rad_y), sin(rad_y)
+    cz, sz = cos(rad_z), sin(rad_z)
     
-    tr = final_r[active_indices]
-    tg = final_g[active_indices]
-    tb = final_b[active_indices]
-
-    # RGBA pixel buffer with higher resolution for antialiasing
-    buf_h = height * scale_factor
-    buf_w = width * scale_factor
-    buf = np.zeros((buf_h, buf_w, 4), dtype=np.uint8)
+    # Rotation matrices (matching MolViewer3D logic)
+    # Ry: x1 = x*cy + z*sy, z1 = -x*sy + z*cy
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    # Rx: y1 = y*cx - z1*sx, z2 = y*sx + z1*cx
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    # Rz: x2 = x1*cz - y1*sz, y2 = x1*sz + y1*cz
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
     
-    MAX_BB = 20  # Increased for higher resolution
-    CHUNK = 3000  # Process 3000 triangles at a time (~4MB per chunk)
+    # Combined rotation: Rz @ Rx @ Ry
+    R = Rz @ Rx @ Ry
+    v_rotated = v_centered @ R.T
     
-    gy, gx = np.meshgrid(np.arange(MAX_BB, dtype=np.float32),
-                         np.arange(MAX_BB, dtype=np.float32), indexing='ij')
+    # Apply scale (zoom)
+    # MolViewer3D uses: sx = cx + x2 * v.zoom, sy = cy - y2 * v.zoom
+    v_scaled = v_rotated * zoom
     
-    for c_start in range(0, N, CHUNK):
-        c_end = min(c_start + CHUNK, N)
-        sl = slice(c_start, c_end)
-        Nc = c_end - c_start
+    # Apply translation (pan and center on screen)
+    v_screen = v_scaled.copy()
+    v_screen[:, 0] += width / 2 + pan_x
+    v_screen[:, 1] = height / 2 + pan_y - v_screen[:, 1] # Invert Y to match sy = cy - y2*zoom
+    
+    print(f"[Performance] Transformations took {time.time()-t0_transform:.3f}s")
+    
+    t0_render = time.time()
+    
+    # Setup rendering buffer using Qt for hardware acceleration instead of slow NumPy
+    img_w = width * scale_factor
+    img_h = height * scale_factor
+    
+    # Scale screen coordinates by supersampling factor
+    v_screen[:, 0] *= scale_factor
+    v_screen[:, 1] *= scale_factor
+    
+    # Depth sort triangles (Painter's algorithm)
+    # Calculate average Z for each triangle
+    tri_z = np.mean(v_rotated[triangles, 2], axis=1)
+    
+    # Sort indices back-to-front (lowest Z to highest Z)
+    # OpenGL/standard convention: more negative Z is further away
+    sorted_idx = np.argsort(tri_z)
+    
+    # Pre-compute all triangle vertices and colors in the sorted order
+    sorted_triangles = triangles[sorted_idx]
+    # colors is per-vertex, so we map it to triangles using the first vertex of each triangle
+    sorted_colors = colors[sorted_triangles[:, 0]]
+    
+    # Extract the 3 vertices for all triangles
+    v0 = v_screen[sorted_triangles[:, 0]]
+    v1 = v_screen[sorted_triangles[:, 1]]
+    v2 = v_screen[sorted_triangles[:, 2]]
+    
+    # Calculate simple flat shading based on normals
+    # Vector from v0 to v1 and v0 to v2
+    vec1 = v1 - v0
+    vec2 = v2 - v0
+    
+    # Cross product for normal
+    nx = vec1[:, 1] * vec2[:, 2] - vec1[:, 2] * vec2[:, 1]
+    ny = vec1[:, 2] * vec2[:, 0] - vec1[:, 0] * vec2[:, 2]
+    nz = vec1[:, 0] * vec2[:, 1] - vec1[:, 1] * vec2[:, 0]
+    
+    # Normalize
+    n_len = np.sqrt(nx*nx + ny*ny + nz*nz)
+    n_len[n_len == 0] = 1.0  # Avoid division by zero
+    
+    # Light direction (assumed coming from top-left-front)
+    light = np.array([0.5, 0.5, 1.0])
+    light = light / np.linalg.norm(light)
+    
+    # Dot product for lighting intensity (0 to 1)
+    # nz corresponds to the view direction component
+    intensity = (nx * light[0] + ny * light[1] + nz * light[2]) / n_len
+    
+    # Normalize intensity to [0, 1] range for both sides of the face
+    intensity = np.abs(intensity)
+    
+    # Add ambient light (0.3) and scale diffuse (0.7)
+    intensity = 0.3 + 0.7 * intensity
+    
+    # Filter out triangles that are completely off-screen
+    # Get bounding box of each triangle
+    min_x = np.minimum(np.minimum(v0[:, 0], v1[:, 0]), v2[:, 0])
+    max_x = np.maximum(np.maximum(v0[:, 0], v1[:, 0]), v2[:, 0])
+    min_y = np.minimum(np.minimum(v0[:, 1], v1[:, 1]), v2[:, 1])
+    max_y = np.maximum(np.maximum(v0[:, 1], v1[:, 1]), v2[:, 1])
+    
+    # Check intersection with screen bounds
+    on_screen = (max_x >= 0) & (min_x < img_w) & (max_y >= 0) & (min_y < img_h)
+    
+    # Filter all arrays
+    v0 = v0[on_screen]
+    v1 = v1[on_screen]
+    v2 = v2[on_screen]
+    sorted_colors = sorted_colors[on_screen]
+    intensity = intensity[on_screen]
+    
+    # Use QPainter for hardware-accelerated triangle drawing
+    from PySide6.QtGui import QImage, QPainter, QColor, QPolygonF, QBrush, Qt
+    from PySide6.QtCore import QPointF
+    
+    # Create QImage to render into
+    qimg = QImage(img_w, img_h, QImage.Format_ARGB32_Premultiplied)
+    qimg.fill(Qt.transparent)
+    
+    img_painter = QPainter(qimg)
+    img_painter.setRenderHint(QPainter.Antialiasing, scale_factor > 1)
+    
+    # Avoid drawing borders on triangles to prevent seams
+    img_painter.setPen(Qt.NoPen)
+    
+    # Draw all triangles
+    for i in range(len(v0)):
+        # Calculate shaded color
+        r = min(255, int(sorted_colors[i, 0] * 255 * intensity[i]))
+        g = min(255, int(sorted_colors[i, 1] * 255 * intensity[i]))
+        b = min(255, int(sorted_colors[i, 2] * 255 * intensity[i]))
         
-        c_ax = t_ax[sl]; c_ay = t_ay[sl]
-        c_bx = t_bx[sl]; c_by = t_by[sl]
-        c_cx = t_cx[sl]; c_cy = t_cy[sl]
+        brush = QBrush(QColor(r, g, b, 255))
+        img_painter.setBrush(brush)
         
-        # Bounding boxes (scaled for higher resolution)
-        mn_x = np.floor(np.minimum(np.minimum(c_ax, c_bx), c_cx) * scale_factor).astype(np.int32)
-        mx_x = np.ceil(np.maximum(np.maximum(c_ax, c_bx), c_cx) * scale_factor).astype(np.int32)
-        mn_y = np.floor(np.minimum(np.minimum(c_ay, c_by), c_cy) * scale_factor).astype(np.int32)
-        mx_y = np.ceil(np.maximum(np.maximum(c_ay, c_by), c_cy) * scale_factor).astype(np.int32)
+        # Create polygon from the 3 vertices
+        poly = QPolygonF([
+            QPointF(v0[i, 0], v0[i, 1]),
+            QPointF(v1[i, 0], v1[i, 1]),
+            QPointF(v2[i, 0], v2[i, 1])
+        ])
         
-        bb_w = mx_x - mn_x + 1
-        bb_h = mx_y - mn_y + 1
-        small = (bb_w <= MAX_BB) & (bb_h <= MAX_BB)
-        si = np.where(small)[0]
-        
-        if len(si) > 0:
-            PX = mn_x[si, np.newaxis, np.newaxis] + gx[np.newaxis]
-            PY = mn_y[si, np.newaxis, np.newaxis] + gy[np.newaxis]
-            
-            AX = c_ax[si, np.newaxis, np.newaxis] * scale_factor
-            AY = c_ay[si, np.newaxis, np.newaxis] * scale_factor
-            BX = c_bx[si, np.newaxis, np.newaxis] * scale_factor
-            BY = c_by[si, np.newaxis, np.newaxis] * scale_factor
-            CX = c_cx[si, np.newaxis, np.newaxis] * scale_factor
-            CY = c_cy[si, np.newaxis, np.newaxis] * scale_factor
-            
-            e0 = (BX-AX)*(PY-AY) - (BY-AY)*(PX-AX)
-            e1 = (CX-BX)*(PY-BY) - (CY-BY)*(PX-BX)
-            e2 = (AX-CX)*(PY-CY) - (AY-CY)*(PX-CX)
-            
-            inside = ((e0>=0)&(e1>=0)&(e2>=0))|((e0<=0)&(e1<=0)&(e2<=0))
-            inb = (PX>=0)&(PX<buf_w)&(PY>=0)&(PY<buf_h)
-            mask = inside & inb
-            
-            fpx = PX[mask].astype(np.intp)
-            fpy = PY[mask].astype(np.intp)
-            tidx = np.broadcast_to(np.arange(len(si))[:,np.newaxis,np.newaxis],
-                                   (len(si),MAX_BB,MAX_BB))[mask]
-            
-            cr = tr[sl][si]; cg = tg[sl][si]; cb = tb[sl][si]
-            buf[fpy, fpx, 0] = cr[tidx]
-            buf[fpy, fpx, 1] = cg[tidx]
-            buf[fpy, fpx, 2] = cb[tidx]
-            buf[fpy, fpx, 3] = 255
-        
-        # Large triangles fallback (scaled)
-        for li in np.where(~small)[0]:
-            _mn_x = max(0, int(mn_x[li])); _mx_x = min(buf_w-1, int(mx_x[li]))
-            _mn_y = max(0, int(mn_y[li])); _mx_y = min(buf_h-1, int(mx_y[li]))
-            if _mn_x > _mx_x or _mn_y > _mx_y: continue
-            px_r = np.arange(_mn_x, _mx_x+1, dtype=np.float32)
-            py_r = np.arange(_mn_y, _mx_y+1, dtype=np.float32)
-            LPX, LPY = np.meshgrid(px_r, py_r)
-            le0=( float(c_bx[li])*scale_factor-float(c_ax[li])*scale_factor)*(LPY-float(c_ay[li])*scale_factor)-(float(c_by[li])*scale_factor-float(c_ay[li])*scale_factor)*(LPX-float(c_ax[li])*scale_factor)
-            le1=( float(c_cx[li])*scale_factor-float(c_bx[li])*scale_factor)*(LPY-float(c_by[li])*scale_factor)-(float(c_cy[li])*scale_factor-float(c_by[li])*scale_factor)*(LPX-float(c_bx[li])*scale_factor)
-            le2=( float(c_ax[li])*scale_factor-float(c_cx[li])*scale_factor)*(LPY-float(c_cy[li])*scale_factor)-(float(c_ay[li])*scale_factor-float(c_cy[li])*scale_factor)*(LPX-float(c_cx[li])*scale_factor)
-            lm=((le0>=0)&(le1>=0)&(le2>=0))|((le0<=0)&(le1<=0)&(le2<=0))
-            ys,xs=np.where(lm)
-            buf[ys+_mn_y,xs+_mn_x,0]=tr[c_start+li]
-            buf[ys+_mn_y,xs+_mn_x,1]=tg[c_start+li]
-            buf[ys+_mn_y,xs+_mn_x,2]=tb[c_start+li]
-            buf[ys+_mn_y,xs+_mn_x,3]=255
-
-    # Downsample for antialiasing (2x supersampling)
+        img_painter.drawPolygon(poly)
+    
+    img_painter.end()
+    
+    # Scale down if supersampling
     if scale_factor > 1:
-        # Simple averaging downsampling for antialiasing
-        buf_small = buf.reshape(height, scale_factor, width, scale_factor, 4).mean(axis=(1, 3)).astype(np.uint8)
-        img = QImage(buf_small.data, width, height, width*4, QImage.Format.Format_RGBA8888)
-    else:
-        img = QImage(buf.data, buf_w, buf_h, buf_w*4, QImage.Format.Format_RGBA8888)
-    img = img.copy()
+        qimg = qimg.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     
+    # Draw the final image to the widget's painter
+    painter.drawImage(0, 0, qimg)
+    
+    # Cache the result
     if not hasattr(render_protein_cartoon, '_img_cache'):
         render_protein_cartoon._img_cache = {}
-    render_protein_cartoon._img_cache = {'key': cache_key, 'img': img}
+    render_protein_cartoon._img_cache = {'key': cache_key, 'img': qimg}
     
-    painter.drawImage(0, 0, img)
-    
-    draw_ms = (time.time()-t0_draw)*1000
-    total_ms = (time.time()-t0_total)*1000
+    print(f"[Performance] Render & Draw (QPainter) took {time.time()-t0_render:.3f}s. Total: {time.time()-t0_total:.3f}s")
 
 
 
