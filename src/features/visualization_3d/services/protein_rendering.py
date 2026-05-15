@@ -172,30 +172,96 @@ class ProteinStructure:
     def _detect_ss_dssp(self):
         """DSSP hydrogen-bond energy algorithm for SS detection.
         
-        Uses the Kabsch-Sander electrostatic model:
-        E = 0.084 * 332 * (1/r_ON + 1/r_CH - 1/r_OH - 1/r_CN) kcal/mol
-        A hydrogen bond exists when E < -0.5 kcal/mol.
+        Optimized with NumPy vectorization. Reduces complexity from O(N^2) Python loops
+        to vectorized matrix operations.
         """
-        for chain in self.chains.values():
+        import time
+        t_start = time.time()
+        for chain_id, chain in self.chains.items():
             residues = chain.residues
             n = len(residues)
-            
             if n < 4:
                 continue
+
+            # 1. Extract backbone coordinates into NumPy arrays
+            t0 = time.time()
+            # We need C, O, N for each residue, and H (estimated)
+            coords_c = np.zeros((n, 3))
+            coords_o = np.zeros((n, 3))
+            coords_n = np.zeros((n, 3))
+            coords_ca = np.zeros((n, 3))
             
-            # Initialize all to coil
-            for r in residues:
-                r.ss_type = SecondaryStructure.COIL
+            valid_mask = np.zeros(n, dtype=bool)
             
-            # Step 1: Build H-bond energy matrix (sparse)
-            hbond_energy = {}
-            for i in range(n):
-                for j in range(n):
-                    if abs(i - j) < 2:
-                        continue
-                    e = self._dssp_hbond_energy(residues, i, j)
-                    if e is not None and e < -0.5:
-                        hbond_energy[(i, j)] = e
+            for i, r in enumerate(residues):
+                if r.c_atom and r.o_atom and r.n_atom and r.ca_atom:
+                    coords_c[i] = [r.c_atom.x, r.c_atom.y, r.c_atom.z]
+                    coords_o[i] = [r.o_atom.x, r.o_atom.y, r.o_atom.z]
+                    coords_n[i] = [r.n_atom.x, r.n_atom.y, r.n_atom.z]
+                    coords_ca[i] = [r.ca_atom.x, r.ca_atom.y, r.ca_atom.z]
+                    valid_mask[i] = True
+            
+            # 2. Estimate H positions
+            # H_i is placed 1.0 A from N_i in the direction of (N_i - C_{i-1})
+            coords_h = np.zeros((n, 3))
+            # For i > 0
+            vec_nc = coords_n[1:] - coords_c[:-1]
+            norms = np.linalg.norm(vec_nc, axis=1, keepdims=True)
+            norms[norms < 0.01] = 1.0
+            coords_h[1:] = coords_n[1:] + (vec_nc / norms) * 1.0
+            
+            # For i = 0 (fallback to CA-N direction)
+            vec_nca = coords_n[0] - coords_ca[0]
+            norm_nca = np.linalg.norm(vec_nca)
+            if norm_nca > 0.01:
+                coords_h[0] = coords_n[0] + (vec_nca / norm_nca) * 1.0
+            else:
+                coords_h[0] = coords_n[0] # fail gracefully
+
+            # 3. Vectorized H-bond energy calculation (E < -0.5 kcal/mol)
+            # E = 0.084 * 332 * (1/r_ON + 1/r_CH - 1/r_OH - 1/r_CN)
+            # We only care about donor i and acceptor j where |i-j| >= 2
+            
+            # To avoid huge memory usage for very large proteins, we use a distance cutoff
+            # H-bonds are rarely > 5A. We can use a spatial grid if N is very large,
+            # but for 2000 residues, 2000x2000 matrix is only 32MB.
+            
+            # Initialize energies with 0
+            energy_matrix = np.zeros((n, n))
+            
+            # Only compute for valid residues
+            idx_i, idx_j = np.where(valid_mask[:, None] & valid_mask[None, :])
+            # Filter |i-j| >= 2
+            mask = np.abs(idx_i - idx_j) >= 2
+            idx_i, idx_j = idx_i[mask], idx_j[mask]
+            
+            if len(idx_i) > 0:
+                # donor i (CO), acceptor j (NH)
+                # r_ON: O_i to N_j
+                # r_CH: C_i to H_j
+                # r_OH: O_i to H_j
+                # r_CN: C_i to N_j
+                
+                r_ON = np.linalg.norm(coords_o[idx_i] - coords_n[idx_j], axis=1)
+                r_CH = np.linalg.norm(coords_c[idx_i] - coords_h[idx_j], axis=1)
+                r_OH = np.linalg.norm(coords_o[idx_i] - coords_h[idx_j], axis=1)
+                r_CN = np.linalg.norm(coords_c[idx_i] - coords_n[idx_j], axis=1)
+                
+                # Avoid division by zero
+                r_ON = np.maximum(r_ON, 0.1)
+                r_CH = np.maximum(r_CH, 0.1)
+                r_OH = np.maximum(r_OH, 0.1)
+                r_CN = np.maximum(r_CN, 0.1)
+                
+                energies = 0.084 * 332.0 * (1.0/r_ON + 1.0/r_CH - 1.0/r_OH - 1.0/r_CN)
+                energy_matrix[idx_i, idx_j] = energies
+            t1 = time.time()
+
+            # 4. Secondary Structure Assignment
+            # Use fast vectorized search instead of slow np.nditer
+            idx_i, idx_j = np.where(energy_matrix < -0.5)
+            hbond_energy = {(int(i), int(j)): float(energy_matrix[i, j]) for i, j in zip(idx_i, idx_j)}
+            t2 = time.time()
             
             # Step 2: Detect n-turns
             turns = {3: {}, 4: {}, 5: {}}
@@ -224,6 +290,7 @@ class ProteinStructure:
                             residues[j].ss_type = SecondaryStructure.PI_HELIX
             
             # Step 4: Detect beta bridges
+            # (Keep this part as is or optimize if needed, but it's usually fast)
             bridge = [[False] * n for _ in range(n)]
             for i in range(1, n - 1):
                 for j in range(i + 2, n - 1):
@@ -260,7 +327,10 @@ class ProteinStructure:
             for r in residues:
                 ss = r.ss_type.value
                 counts[ss] = counts.get(ss, 0) + 1
-            print(f"[DSSP] Chain {chain.chain_id} computed SS: {counts}")
+            t3 = time.time()
+            print(f"[DSSP] Chain {chain.chain_id} - Matrix: {t1-t0:.3f}s, Dict: {t2-t1:.3f}s, Rules: {t3-t2:.3f}s")
+            print(f"[DSSP] Computed SS: {counts}")
+        print(f"[Performance] Total DSSP took {time.time()-t_start:.3f}s")
     
     def _dssp_hbond_energy(self, residues: List['Residue'], 
                            donor_idx: int, acceptor_idx: int) -> Optional[float]:
