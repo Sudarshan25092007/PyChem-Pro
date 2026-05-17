@@ -335,9 +335,15 @@ class RamachandranWidget(PluginWidget):
             if hasattr(self, 'figure'):
                 plt.close(self.figure)
             self.structure_data.clear()
-            self.logger.info("RamachandranWidget cleaned up and figure closed.")
+            if hasattr(self, 'plugin') and self.plugin and hasattr(self.plugin, 'logger'):
+                self.plugin.logger.info("RamachandranWidget cleaned up and figure closed.")
+            else:
+                print("RamachandranWidget cleaned up and figure closed.")
         except Exception as e:
-            self.logger.error(f"Error during RamachandranWidget cleanup: {e}")
+            if hasattr(self, 'plugin') and self.plugin and hasattr(self.plugin, 'logger'):
+                self.plugin.logger.error(f"Error during RamachandranWidget cleanup: {e}")
+            else:
+                print(f"Error during RamachandranWidget cleanup: {e}")
 
     def _get_stylesheet(self):
         return """
