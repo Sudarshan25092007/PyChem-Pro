@@ -533,12 +533,10 @@ def render_protein_cartoon(painter, molecule: Molecule,
     t0_total = time.time()
     
     # Antialiasing scale factor for smooth rendering
-    from src.core.hardware_profiler import HardwareProfiler
-    _hw = HardwareProfiler()
-    if _hw.is_high_end:
-        scale_factor = 2  # Always 2x supersampling on high-end
+    if is_interacting:
+        scale_factor = 1  # Always drop supersampling during interaction to maximize FPS
     else:
-        scale_factor = 1 if is_interacting else 2  # Drop during interaction on low-end
+        scale_factor = 2  # Beautiful supersampled output when static
     
     # EARLY CACHE CHECK — skip ALL math if camera hasn't changed
     cache_key = (id(molecule), round(rot_x, 4), round(rot_y, 4), round(rot_z, 4),
@@ -551,12 +549,12 @@ def render_protein_cartoon(painter, molecule: Molecule,
         return
     
     # 1. Get the cached 3D mesh with higher quality for smooth rendering
-    if _hw.is_high_end:
-        current_steps = 24   # Always high quality on high-end
-        current_profile = 16
+    if is_interacting:
+        current_steps = 3    # Low LOD for smooth interaction
+        current_profile = 4
     else:
-        current_steps = 3 if is_interacting else 24   # Drop during interaction on low-end
-        current_profile = 4 if is_interacting else 16
+        current_steps = 24   # High quality when static
+        current_profile = 16
     
     t0_mesh = time.time()
     vertices, triangles, colors = _cartoon_gen.get_mesh(molecule, spline_steps=current_steps, profile_detail=current_profile)

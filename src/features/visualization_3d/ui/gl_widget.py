@@ -26,8 +26,9 @@ import numpy as np
 from src.shared.qt_compat import (
     Qt, QColor, QPainter, QPen, QBrush, QFont, QPointF, QRectF,
     QRadialGradient, QWheelEvent, QVector3D, QMatrix4x4,
-    QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer, COLORS
+    QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer, Signal
 )
+from src.shared.ui.theme import COLORS
 from src.features.visualization_3d.ui.shaders import (
     MESH_VERTEX_SHADER, MESH_FRAGMENT_SHADER,
     SPHERE_VERTEX_SHADER, SPHERE_FRAGMENT_SHADER
@@ -131,6 +132,12 @@ class GLMoleculeWidget(_QOpenGLWidget):
     zoom : float
         Zoom factor (pixels per Angstrom, roughly).
     """
+    
+    # Signals (matching MolViewer3D)
+    atom_hovered = Signal(int)
+    atom_clicked = Signal(int)
+    selection_changed = Signal(object)
+    delete_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,7 +182,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         self._shader_sphere = None
         self._vbo_atoms = None
         self._vbo_mesh = None
-        self._num_mesh_indices = 0
+        self._num_mesh_vertices = 0
         self._vao_atoms = None
         self._vao_mesh = None
 
@@ -252,6 +259,14 @@ class GLMoleculeWidget(_QOpenGLWidget):
             gl.glEnable(0x8861)   # GL_MULTISAMPLE
 
             self._init_shaders()
+            
+            from src.shared.qt_compat import QOpenGLVertexArrayObject
+            self._vao_atoms = QOpenGLVertexArrayObject()
+            self._vao_atoms.create()
+            
+            self._vao_mesh = QOpenGLVertexArrayObject()
+            self._vao_mesh.create()
+
             self.gl_available = True
             print(f"[GL] Context ready — OpenGL {major}.{minor} Renderer: {self._gl_renderer_string}")
             print(f"[GL] Initialization complete in {time.time()-t_init:.3f}s")
@@ -306,12 +321,16 @@ class GLMoleculeWidget(_QOpenGLWidget):
             gl.glEnable(0x8861) # GL_MULTISAMPLE
             
             # 1. Draw Mesh (Protein Cartoon)
-            if self._vbo_mesh and self._num_mesh_indices > 0:
+            if self._vbo_mesh and getattr(self, '_num_mesh_vertices', 0) > 0:
+                if self._vao_mesh: self._vao_mesh.bind()
                 self._draw_mesh(gl, proj, view)
+                if self._vao_mesh: self._vao_mesh.release()
                 
             # 2. Draw Atoms (Sphere Impostors)
             if self._vbo_atoms and len(self._positions) > 0:
+                if self._vao_atoms: self._vao_atoms.bind()
                 self._draw_atoms(gl, proj, view)
+                if self._vao_atoms: self._vao_atoms.release()
             
             # Log only if frame is very slow
             dt = time.time() - t_frame
@@ -572,6 +591,13 @@ class GLMoleculeWidget(_QOpenGLWidget):
             colors[i] = c
             radii[i] = _display_radius(atom.symbol)
             symbols.append(atom.symbol)
+            
+        # Center to origin
+        if n > 0:
+            self._centroid = np.mean(positions, axis=0)
+            positions -= self._centroid
+        else:
+            self._centroid = np.zeros(3, dtype=np.float32)
 
         self._positions = positions
         self._colors = colors
@@ -610,25 +636,31 @@ class GLMoleculeWidget(_QOpenGLWidget):
     def _update_gl_buffers(self):
         """Upload molecule data to GPU buffers."""
         if not self.gl_available: return
+        import time
         t_upd = time.time()
         try:
             self.makeCurrent()
             gl = self.context().functions()
             
-            # 1. Atoms Buffer (Center, Color, Radius)
+            # 1. Atoms Buffer (Center, Color, Radius, Offset)
             if self._vbo_atoms: self._vbo_atoms.destroy()
             n = len(self._positions)
             if n > 0:
-                # Interleaved buffer: 3 floats Pos, 3 floats Color, 1 float Radius = 7 floats
-                data = np.zeros(n * 7, dtype=np.float32)
-                data[0::7] = self._positions[:, 0]
-                data[1::7] = self._positions[:, 1]
-                data[2::7] = self._positions[:, 2]
-                data[3::7] = self._colors[:, 0]
-                data[4::7] = self._colors[:, 1]
-                data[5::7] = self._colors[:, 2]
-                data[6::7] = self._radii * self.sphere_scale
-                
+                import numpy as np
+                data = np.zeros(n * 6 * 9, dtype=np.float32)
+                for i in range(6):
+                    data[i*9+0::54] = self._positions[:, 0]
+                    data[i*9+1::54] = self._positions[:, 1]
+                    data[i*9+2::54] = self._positions[:, 2]
+                    data[i*9+3::54] = self._colors[:, 0]
+                    data[i*9+4::54] = self._colors[:, 1]
+                    data[i*9+5::54] = self._colors[:, 2]
+                    data[i*9+6::54] = self._radii * self.sphere_scale
+                offsets = np.array([[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]], dtype=np.float32)
+                for i in range(6):
+                    data[i*9+7::54] = offsets[i, 0]
+                    data[i*9+8::54] = offsets[i, 1]
+                from src.shared.qt_compat import QOpenGLBuffer
                 self._vbo_atoms = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
                 self._vbo_atoms.create()
                 self._vbo_atoms.bind()
@@ -641,31 +673,37 @@ class GLMoleculeWidget(_QOpenGLWidget):
                 v, t, c = generate_cartoon_mesh(self.molecule)
                 if v is not None:
                     if self._vbo_mesh: self._vbo_mesh.destroy()
-                    self._num_mesh_indices = len(t) * 3
-                    
-                    # Interleaved: Pos(3), Color(3), Normal(3) = 9 floats
-                    mdata = np.zeros(len(v) * 9, dtype=np.float32)
-                    mdata[0::9] = v[:, 0]
-                    mdata[1::9] = v[:, 1]
-                    mdata[2::9] = v[:, 2]
-                    mdata[3::9] = c[:, 0]
-                    mdata[4::9] = c[:, 1]
-                    mdata[5::9] = c[:, 2]
-                    # Normals (approximate for smooth look)
-                    norms = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-6)
-                    mdata[6::9] = norms[:, 0]
-                    mdata[7::9] = norms[:, 1]
-                    mdata[8::9] = norms[:, 2]
-                    
+                    indices = t.flatten()
+                    v_flat = v[indices] - self._centroid
+                    c_flat = c[indices]
+                    self._num_mesh_vertices = len(v_flat)
+                    mdata = np.zeros(self._num_mesh_vertices * 9, dtype=np.float32)
+                    mdata[0::9] = v_flat[:, 0]
+                    mdata[1::9] = v_flat[:, 1]
+                    mdata[2::9] = v_flat[:, 2]
+                    mdata[3::9] = c_flat[:, 0]
+                    mdata[4::9] = c_flat[:, 1]
+                    mdata[5::9] = c_flat[:, 2]
+                    # Vectorized normal computation (replaces slow per-triangle Python loop)
+                    n_tris = self._num_mesh_vertices // 3
+                    tri_verts = v_flat[:n_tris * 3].reshape(n_tris, 3, 3)  # (T, 3_verts, 3_xyz)
+                    edge1 = tri_verts[:, 1, :] - tri_verts[:, 0, :]
+                    edge2 = tri_verts[:, 2, :] - tri_verts[:, 0, :]
+                    normals = np.cross(edge1, edge2)  # (T, 3)
+                    mags = np.linalg.norm(normals, axis=1, keepdims=True)
+                    mags[mags < 1e-6] = 1.0
+                    normals /= mags
+                    # Broadcast same normal to all 3 vertices of each triangle
+                    normals_expanded = np.repeat(normals, 3, axis=0)  # (T*3, 3)
+                    mdata[6::9] = normals_expanded[:, 0]
+                    mdata[7::9] = normals_expanded[:, 1]
+                    mdata[8::9] = normals_expanded[:, 2]
+                    from src.shared.qt_compat import QOpenGLBuffer
                     self._vbo_mesh = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
                     self._vbo_mesh.create()
                     self._vbo_mesh.bind()
                     self._vbo_mesh.allocate(mdata.tobytes(), len(mdata.tobytes()))
-                    
-                    self._ibo_mesh = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
-                    self._ibo_mesh.create()
-                    self._ibo_mesh.bind()
-                    self._ibo_mesh.allocate(t.astype(np.uint32).tobytes(), t.nbytes)
+                    self._ibo_mesh = None
                     print(f"[GL] Mesh buffer updated in {time.time()-t_mesh:.3f}s")
             else:
                 self._vbo_mesh = None
@@ -695,45 +733,36 @@ class GLMoleculeWidget(_QOpenGLWidget):
         self._shader_sphere.setUniformValue("view", view)
         
         self._vbo_atoms.bind()
-        gl.glEnableVertexAttribArray(0) # Pos
-        gl.glVertexAttribPointer(0, 3, 0x1406, False, 28, None)
-        gl.glEnableVertexAttribArray(1) # Color
-        gl.glVertexAttribPointer(1, 3, 0x1406, False, 28, ctypes.c_void_p(12))
-        gl.glEnableVertexAttribArray(2) # Radius
-        gl.glVertexAttribPointer(2, 1, 0x1406, False, 28, ctypes.c_void_p(24))
-
-        # Using Instanced Rendering (6 vertices per instance)
-        # Location 0, 1, 2 are per-instance (divisor = 1)
-        gl.glVertexAttribDivisor(0, 1)
-        gl.glVertexAttribDivisor(1, 1)
-        gl.glVertexAttribDivisor(2, 1)
+        self._shader_sphere.enableAttributeArray(0)
+        self._shader_sphere.setAttributeBuffer(0, 0x1406, 0, 3, 36)
+        self._shader_sphere.enableAttributeArray(1)
+        self._shader_sphere.setAttributeBuffer(1, 0x1406, 12, 3, 36)
+        self._shader_sphere.enableAttributeArray(2)
+        self._shader_sphere.setAttributeBuffer(2, 0x1406, 24, 1, 36)
+        self._shader_sphere.enableAttributeArray(3)
+        self._shader_sphere.setAttributeBuffer(3, 0x1406, 28, 2, 36)
         
-        gl.glDrawArraysInstanced(0x0004, 0, 6, len(self._positions))
-        
-        # Reset divisors for other shaders
-        gl.glVertexAttribDivisor(0, 0)
-        gl.glVertexAttribDivisor(1, 0)
-        gl.glVertexAttribDivisor(2, 0)
+        gl.glDrawArrays(0x0004, 0, len(self._positions) * 6)
         
     def _draw_mesh(self, gl, proj, view):
         self._shader_mesh.bind()
         self._shader_mesh.setUniformValue("projection", proj)
         self._shader_mesh.setUniformValue("view", view)
+        from src.shared.qt_compat import QMatrix4x4, QVector3D
         self._shader_mesh.setUniformValue("model", QMatrix4x4())
         self._shader_mesh.setUniformValue("lightPos", QVector3D(50, 50, 100))
         self._shader_mesh.setUniformValue("viewPos", QVector3D(0, 0, 100))
         self._shader_mesh.setUniformValue("lightColor", QVector3D(1, 1, 1))
         
         self._vbo_mesh.bind()
-        self._ibo_mesh.bind()
-        gl.glEnableVertexAttribArray(0) # Pos
-        gl.glVertexAttribPointer(0, 3, 0x1406, False, 36, None)
-        gl.glEnableVertexAttribArray(1) # Color
-        gl.glVertexAttribPointer(1, 3, 0x1406, False, 36, ctypes.c_void_p(12))
-        gl.glEnableVertexAttribArray(2) # Normal
-        gl.glVertexAttribPointer(2, 3, 0x1406, False, 36, ctypes.c_void_p(24))
+        self._shader_mesh.enableAttributeArray(0)
+        self._shader_mesh.setAttributeBuffer(0, 0x1406, 0, 3, 36)
+        self._shader_mesh.enableAttributeArray(1)
+        self._shader_mesh.setAttributeBuffer(1, 0x1406, 12, 3, 36)
+        self._shader_mesh.enableAttributeArray(2)
+        self._shader_mesh.setAttributeBuffer(2, 0x1406, 24, 3, 36)
         
-        gl.glDrawElements(0x0004, self._num_mesh_indices, 0x1405, None) # GL_UNSIGNED_INT is 0x1405
+        gl.glDrawArrays(0x0004, 0, self._num_mesh_vertices)
 
     def _pack_bonds(self, mol, atoms, atom_colors):
         """Pack bond endpoint data into flat numpy arrays."""

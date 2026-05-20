@@ -78,7 +78,9 @@ def generate_cartoon_mesh(molecule, spline_steps=None, profile_detail=None):
     results = []
     # Use ThreadPoolExecutor instead of ProcessPool on Windows.
     # This avoids the slow process startup and data pickling overhead.
-    with ThreadPoolExecutor() as executor:
+    # Use 50% of CPU cores, consistent with ParallelExecutor convention.
+    num_workers = max(1, (os.cpu_count() or 4) // 2)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = [
             executor.submit(generate_chain_mesh_vectorized, chain, spline_steps, profile_detail)
             for chain in chains_to_process
