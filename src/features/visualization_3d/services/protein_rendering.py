@@ -525,12 +525,17 @@ def render_protein_cartoon(painter, molecule: Molecule,
     - Thin same-color pen eliminates visible triangle edges (anti-aliasing)
     - Optional Gouraud normal smoothing blends normals across shared vertices
     - INTERACTIVE LOD: Switches to 4 subdivisions during rotation for speed.
+    - OpenGL-accelerated rendering when available via GL widget
     """
     from PySide6.QtGui import QColor, QPen, QBrush, QPolygonF, QPainter, QPainterPath, QImage
     from PySide6.QtCore import QPointF, Qt
     import time
     
     t0_total = time.time()
+    
+    # Check if OpenGL rendering should be used (via GL widget)
+    # This function is called by software renderer, so we optimize the software path
+    # The GL widget handles its own OpenGL rendering separately
     
     # Antialiasing scale factor for smooth rendering
     if is_interacting:

@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 ATOM_THRESHOLD = 500
 
+# Protein molecules should always use OpenGL for better performance
+PROTEIN_ATOM_THRESHOLD = 100  # Lower threshold for proteins
+
 
 class RendererFactory:
     """Decides which renderer to use for a given molecule.
@@ -65,7 +68,15 @@ class RendererFactory:
             atoms = getattr(mol, 'atoms', None)
             n = len(atoms) if atoms is not None else 0
 
-        return n >= ATOM_THRESHOLD
+        # Check if this is a protein molecule
+        is_protein = False
+        if hasattr(mol, 'properties'):
+            is_protein = mol.properties.get('is_protein', False)
+
+        # Use lower threshold for proteins to ensure OpenGL acceleration
+        threshold = PROTEIN_ATOM_THRESHOLD if is_protein else ATOM_THRESHOLD
+
+        return n >= threshold
 
     def check_gl_available(self, gl_widget) -> bool:
         """Check whether OpenGL is actually usable.

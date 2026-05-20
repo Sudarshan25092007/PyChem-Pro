@@ -95,7 +95,7 @@ void main() {
     );
     vTexCoord = offsets[gl_VertexID % 6];
     
-    vec3 pos = aPos + (cameraRight * vTexCoord.x + cameraUp * vTexCoord.y) * size;
+    vec3 pos = aPos + (cameraRight * vTexCoord.x + cameraUp * vTexCoord.y) * vRadius;
     gl_Position = projection * view * vec4(pos, 1.0);
 }
 """
