@@ -16,7 +16,7 @@ from enum import Enum
 
 from src.core.domain.models.molecule import Molecule
 from src.core.domain.models.atom import Atom
-from src.features.visualization_3d.services.cartoon_generator import CartoonGenerator
+from src.features.visualization_3d.services.cartoon_generator import CartoonGenerator, _select_lod
 
 # Global generator instance (LOD auto-detected per molecule)
 _cartoon_gen = CartoonGenerator()
@@ -538,10 +538,8 @@ def render_protein_cartoon(painter, molecule: Molecule,
     # The GL widget handles its own OpenGL rendering separately
     
     # Antialiasing scale factor for smooth rendering
-    if is_interacting:
-        scale_factor = 1  # Always drop supersampling during interaction to maximize FPS
-    else:
-        scale_factor = 2  # Beautiful supersampled output when static
+    # Remove supersampling reduction for max quality at all times
+    scale_factor = 2
     
     # EARLY CACHE CHECK — skip ALL math if camera hasn't changed
     cache_key = (id(molecule), round(rot_x, 4), round(rot_y, 4), round(rot_z, 4),
@@ -553,16 +551,12 @@ def render_protein_cartoon(painter, molecule: Molecule,
         painter.drawImage(0, 0, render_protein_cartoon._img_cache['img'])
         return
     
-    # 1. Get the cached 3D mesh with higher quality for smooth rendering
-    if is_interacting:
-        current_steps = 3    # Low LOD for smooth interaction
-        current_profile = 4
-    else:
-        current_steps = 24   # High quality when static
-        current_profile = 16
+    # Use high quality cached mesh at all times (previously 24/16)
+    spline_steps = 24
+    profile_detail = 16
     
     t0_mesh = time.time()
-    vertices, triangles, colors = _cartoon_gen.get_mesh(molecule, spline_steps=current_steps, profile_detail=current_profile)
+    vertices, triangles, colors = _cartoon_gen.get_mesh(molecule, spline_steps=spline_steps, profile_detail=profile_detail)
     
     if vertices is None or len(vertices) == 0:
         return
