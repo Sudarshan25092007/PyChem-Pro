@@ -424,8 +424,13 @@ class InputPanel(QWidget):
             _row("Atoms",   str(len(molecule.atoms))),
             _row("Bonds",   str(len(molecule.bonds))),
             _row("Charge",  str(molecule.total_charge())),
-            _row("Rings",   str(len(molecule.find_rings()))),
         ]
+        
+        # Ring finding is computationally expensive for large proteins
+        if len(molecule.atoms) > 500:
+            info_lines.append(_row("Rings", "N/A (large)"))
+        else:
+            info_lines.append(_row("Rings", str(len(molecule.find_rings()))))
 
         charges = [a.partial_charge for a in molecule.atoms
                    if a.partial_charge != 0]

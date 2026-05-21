@@ -27,11 +27,12 @@ try:
     from PySide6.QtCore import Qt, QThread, Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication, QStandardPaths, QSize, QEventLoop, QUrl
     from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QFontMetricsF, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette, QTransform, QVector3D, QMatrix4x4
     try:
-        from PySide6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer
+        from PySide6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer, QOpenGLVertexArrayObject
     except ImportError:
         class QOpenGLShaderProgram: pass
         class QOpenGLShader: pass
         class QOpenGLBuffer: pass
+        class QOpenGLVertexArrayObject: pass
 
     QT_FRAMEWORK = "PySide6"
     
@@ -57,11 +58,12 @@ except ImportError as e:
         from PyQt6.QtCore import Qt, QThread, pyqtSignal as Signal, QObject, QSettings, QTimer, QPointF, QRect, QRectF, QCoreApplication, QStandardPaths, QSize, QEventLoop, QUrl
         from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QFontMetrics, QFontMetricsF, QWheelEvent, QRadialGradient, QLinearGradient, QImage, QConicalGradient, QPainterPath, QPolygonF, QTextCursor, QPaintEvent, QPalette, QTransform, QVector3D, QMatrix4x4
         try:
-            from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer
+            from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer, QOpenGLVertexArrayObject
         except ImportError:
             class QOpenGLShaderProgram: pass
             class QOpenGLShader: pass
             class QOpenGLBuffer: pass
+            class QOpenGLVertexArrayObject: pass
 
         QT_FRAMEWORK = "PyQt6"
         print("Using PyQt6 framework (PySide6 failed)")
@@ -653,6 +655,7 @@ except ImportError as e:
         class QOpenGLShaderProgram: pass
         class QOpenGLShader: pass
         class QOpenGLBuffer: pass
+        class QOpenGLVertexArrayObject: pass
         
         class QCoreApplication:
             @staticmethod
@@ -919,7 +922,7 @@ __all__ = [
     'QDockWidget', 'QListWidget', 'QListWidgetItem', 'QDialog', 'QInputDialog', 'QFormLayout',
     'QCoreApplication', 'QPaintEvent', 'QStandardPaths',
     'QGraphicsView', 'QGraphicsScene', 'QGraphicsItem', 'QGraphicsEllipseItem', 'QStackedWidget', 
-    'QVector3D', 'QMatrix4x4', 'QOpenGLShaderProgram', 'QOpenGLShader', 'QOpenGLBuffer', 
+    'QVector3D', 'QMatrix4x4', 'QOpenGLShaderProgram', 'QOpenGLShader', 'QOpenGLBuffer', 'QOpenGLVertexArrayObject',
     'QGraphicsLineItem', 'QGraphicsRectItem', 'QGraphicsPolygonItem', 
     'QGraphicsPathItem', 'QGraphicsPixmapItem', 'QGraphicsSimpleTextItem', 
     'QGraphicsTextItem', 'QGraphicsItemGroup', 'QGraphicsProxyWidget',

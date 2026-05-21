@@ -145,6 +145,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         # --- Public state ---
         self.molecule = None
         self.gl_available = False
+        self.selected_atoms = set()
 
         # Camera state (matches MolViewer3D defaults)
         self.rot_x = 20.0
@@ -179,9 +180,14 @@ class GLMoleculeWidget(_QOpenGLWidget):
 
         # GL resources
         self._shader_mesh = None
+        self._shader_line = None
         self._shader_sphere = None
         self._vbo_atoms = None
         self._vbo_mesh = None
+        self._vbo_lines = None
+        self._num_lines = 0
+        self._ligand_start = 0
+        self._ligand_bond_start = 0
         self._num_mesh_vertices = 0
         self._vao_atoms = None
         self._vao_mesh = None
@@ -275,6 +281,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
             print(f'[GL] OpenGL initialisation failed: {exc}')
             traceback.print_exc()
             self.gl_available = False
+        self.selected_atoms = set()
 
     def resizeGL(self, w, h):
         """Handle widget resize — update the GL viewport."""
@@ -326,11 +333,62 @@ class GLMoleculeWidget(_QOpenGLWidget):
                 self._draw_mesh(gl, proj, view)
                 if self._vao_mesh: self._vao_mesh.release()
                 
+            
+            is_mesh_active = self._vbo_mesh and getattr(self, '_num_mesh_vertices', 0) > 0
+
             # 2. Draw Atoms (Sphere Impostors)
             if self._vbo_atoms and len(self._positions) > 0:
                 if self._vao_atoms: self._vao_atoms.bind()
-                self._draw_atoms(gl, proj, view)
+                
+                # If protein mesh is active, only draw ligand spheres!
+                if is_mesh_active and self._ligand_start < len(self._positions):
+                    self._shader_sphere.bind()
+                    self._shader_sphere.setUniformValue('projection', proj)
+                    self._shader_sphere.setUniformValue('view', view)
+                    gl.glBindBuffer(0x8892, self._vbo_atoms)
+                    gl.glEnableVertexAttribArray(0)
+                    gl.glVertexAttribPointer(0, 3, 0x1406, False, 28, gl.GLvoidp(0))
+                    gl.glEnableVertexAttribArray(1)
+                    gl.glVertexAttribPointer(1, 3, 0x1406, False, 28, gl.GLvoidp(12))
+                    gl.glEnableVertexAttribArray(2)
+                    gl.glVertexAttribPointer(2, 1, 0x1406, False, 28, gl.GLvoidp(24))
+                    
+                    num_ligand_atoms = len(self._positions) - self._ligand_start
+                    gl.glDrawArrays(0x0000, self._ligand_start, num_ligand_atoms)
+                    
+                    gl.glDisableVertexAttribArray(0)
+                    gl.glDisableVertexAttribArray(1)
+                    gl.glDisableVertexAttribArray(2)
+                    self._shader_sphere.release()
+                elif not is_mesh_active:
+                    self._draw_atoms(gl, proj, view)
+                    
                 if self._vao_atoms: self._vao_atoms.release()
+
+            # 3. Draw Bonds (Lines)
+            if self._vbo_lines and self._num_lines > 0:
+                self._shader_line.bind()
+                self._shader_line.setUniformValue('projection', proj)
+                self._shader_line.setUniformValue('view', view)
+                
+                gl.glLineWidth(2.0)
+                self._vbo_lines.bind()
+                gl.glEnableVertexAttribArray(0)
+                gl.glVertexAttribPointer(0, 3, 0x1406, False, 24, gl.GLvoidp(0))
+                gl.glEnableVertexAttribArray(1)
+                gl.glVertexAttribPointer(1, 3, 0x1406, False, 24, gl.GLvoidp(12))
+                
+                if is_mesh_active:
+                    num_ligand_lines = self._num_lines - self._ligand_bond_start
+                    if num_ligand_lines > 0:
+                        gl.glDrawArrays(0x0001, self._ligand_bond_start, num_ligand_lines)
+                else:
+                    gl.glDrawArrays(0x0001, 0, self._num_lines)
+                    
+                gl.glDisableVertexAttribArray(0)
+                gl.glDisableVertexAttribArray(1)
+                self._vbo_lines.release()
+                self._shader_line.release()
             
             # Log only if frame is very slow
             dt = time.time() - t_frame
@@ -632,6 +690,7 @@ class GLMoleculeWidget(_QOpenGLWidget):
         except Exception as e:
             print(f"[GL] Shader init error: {e}")
             self.gl_available = False
+        self.selected_atoms = set()
 
     def _update_gl_buffers(self):
         """Upload molecule data to GPU buffers."""
@@ -707,6 +766,25 @@ class GLMoleculeWidget(_QOpenGLWidget):
                     print(f"[GL] Mesh buffer updated in {time.time()-t_mesh:.3f}s")
             else:
                 self._vbo_mesh = None
+                
+            # 3. Create Line VBO
+            if self._bond_starts is not None and len(self._bond_starts) > 0:
+                self._num_lines = len(self._bond_starts) * 2
+                line_data = np.empty((len(self._bond_starts), 2, 6), dtype=np.float32)
+                line_data[:, 0, 0:3] = self._bond_starts
+                line_data[:, 0, 3:6] = self._bond_start_colors
+                line_data[:, 1, 0:3] = self._bond_ends
+                line_data[:, 1, 3:6] = self._bond_end_colors
+                line_data = line_data.reshape(-1, 6)
+                
+                from src.shared.qt_compat import QOpenGLBuffer
+                self._vbo_lines = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+                self._vbo_lines.create()
+                self._vbo_lines.bind()
+                self._vbo_lines.allocate(line_data.tobytes(), len(line_data.tobytes()))
+            else:
+                self._vbo_lines = None
+                self._num_lines = 0
 
             print(f"[Performance] Total GL Buffer update took {time.time()-t_upd:.3f}s")
 
@@ -772,13 +850,13 @@ class GLMoleculeWidget(_QOpenGLWidget):
             self._bond_ends = None
             self._bond_start_colors = None
             self._bond_end_colors = None
+            self._ligand_bond_start = 0
             return
 
         n_atoms = len(atoms)
-        starts = []
-        ends = []
-        start_colors = []
-        end_colors = []
+        
+        prot_starts, prot_ends, prot_start_colors, prot_end_colors = [], [], [], []
+        lig_starts, lig_ends, lig_start_colors, lig_end_colors = [], [], [], []
 
         for bond in bonds:
             bi = bond.begin_atom_idx
@@ -793,10 +871,29 @@ class GLMoleculeWidget(_QOpenGLWidget):
             if not self.show_hydrogens and (a1.symbol == 'H' or a2.symbol == 'H'):
                 continue
 
-            starts.append([a1.x, a1.y, a1.z if a1.z is not None else 0.0])
-            ends.append([a2.x, a2.y, a2.z if a2.z is not None else 0.0])
-            start_colors.append(atom_colors[bi])
-            end_colors.append(atom_colors[ei])
+            p1 = [a1.x, a1.y, a1.z if a1.z is not None else 0.0]
+            p2 = [a2.x, a2.y, a2.z if a2.z is not None else 0.0]
+            
+            # Check if this bond belongs to the ligand
+            is_ligand = a1.properties.get('is_hetatm', False) or a2.properties.get('is_hetatm', False)
+            
+            if is_ligand:
+                lig_starts.append(p1)
+                lig_ends.append(p2)
+                lig_start_colors.append(atom_colors[bi])
+                lig_end_colors.append(atom_colors[ei])
+            else:
+                prot_starts.append(p1)
+                prot_ends.append(p2)
+                prot_start_colors.append(atom_colors[bi])
+                prot_end_colors.append(atom_colors[ei])
+
+        self._ligand_bond_start = len(prot_starts) * 2
+
+        starts = prot_starts + lig_starts
+        ends = prot_ends + lig_ends
+        start_colors = prot_start_colors + lig_start_colors
+        end_colors = prot_end_colors + lig_end_colors
 
         if starts:
             self._bond_starts = np.array(starts, dtype=np.float32)

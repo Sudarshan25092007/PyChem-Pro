@@ -737,11 +737,21 @@ class MolViewer3D(QWidget):
         # Check if we should use GL for this molecule
         use_gl = False
         if molecule:
+            # Debug logging
+            is_protein = getattr(molecule, 'properties', {}).get('is_protein', False)
+            n_atoms = len(molecule.atoms) if hasattr(molecule, 'atoms') else 0
+            print(f"[DEBUG] set_molecule: is_protein={is_protein}, n_atoms={n_atoms}")
+            
             # Check size threshold
             if factory.should_use_gl(molecule):
                 # Ensure the GL widget actually succeeded in initialisation
                 if factory.check_gl_available(self.gl_viewer):
                     use_gl = True
+                    print(f"[DEBUG] OpenGL available and threshold met, using GL")
+                else:
+                    print(f"[DEBUG] OpenGL not available (gl_available=False)")
+            else:
+                print(f"[DEBUG] Threshold not met for GL")
         
         if use_gl:
             # Sync camera parameters from software to GL before switching
